@@ -1,0 +1,26 @@
+# --- Python & System ---
+__pycache__/
+*.pyc
+.DS_Store
+
+# --- Virtual Environments (Huge folders, never push) ---
+venv/
+.venv/
+
+# --- Editor Settings (Personal preferences) ---
+.vscode/
+
+# --- Databases (Binary/Local Data - Do NOT push) ---
+*.db
+*.sqlite3
+freeme.db
+backend/freeme.db
+.env
+
+# --- Vector Storage (Heavy files) ---
+freeme_qdrant_db/
+qdrant_storage/
+
+# --- Optional: Data (If files are >100MB) ---
+# raw_data/
+# dataset.csv

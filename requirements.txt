@@ -13,3 +13,4 @@ pandas==2.2.0
 numpy==1.26.3
 tqdm
 openai
+gunicorn==21.2.0

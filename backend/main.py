@@ -17,17 +17,30 @@ import os
 from dotenv import load_dotenv
 
 # --- SECURITY: LOAD ENV VARIABLES ---
-load_dotenv()  # This loads variables from your .env file
+load_dotenv()
 
+# 1. API KEYS
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-# Fallback model if env var is missing, though you should put this in .env too if it changes
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "arcee-ai/trinity-large-preview:free")
 
-if not OPENROUTER_API_KEY:
-    print("⚠️ WARNING: OPENROUTER_API_KEY not found in .env file!")
+# 2. DATABASE CONNECTION (Cloud vs Local)
+QDRANT_URL = os.getenv("QDRANT_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+
+print("🦅 FreeMe Neural Core Starting...")
+
+# LOGIC: If Cloud keys exist, connect to Cloud. Else, use local file.
+if QDRANT_URL and QDRANT_API_KEY:
+    print("☁️ CONNECTING TO QDRANT CLOUD...")
+    client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+else:
+    print("📁 USING LOCAL STORAGE (qdrant_storage)...")
+    # Ensure qdrant_storage is in .gitignore so you don't push heavy files
+    client = QdrantClient(path="qdrant_storage", force_disable_check_same_thread=True)
 
 app = FastAPI(title="FreeMe Engine v3.0")
 
+# CORS: Allow all origins so GitHub Pages can talk to Render
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -38,12 +51,9 @@ app.add_middleware(
 
 Base.metadata.create_all(bind=engine)
 
-print("🦅 FreeMe Neural Core Starting...")
+# Load AI Models
 model = SentenceTransformer("all-MiniLM-L6-v2")
 cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-
-# Ensure qdrant_storage is in .gitignore
-client = QdrantClient(path="qdrant_storage", force_disable_check_same_thread=True)
 
 def get_db():
     db = SessionLocal()
@@ -59,7 +69,9 @@ def get_safe_rating(payload):
 
 def safe_vector_search(vector, limit=50):
     try: return client.query_points(collection_name="freeme_collection", query=vector, limit=limit).points
-    except: return []
+    except Exception as e:
+        print(f"Vector Search Error: {e}")
+        return []
 
 def get_llm_recommendations(query):
     try:
@@ -67,7 +79,7 @@ def get_llm_recommendations(query):
         
         resp = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "HTTP-Referer": "http://localhost"},
+            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "HTTP-Referer": "http://nexus-search.com"},
             data=json.dumps({
                 "model": OPENROUTER_MODEL,
                 "messages": [{"role": "user", "content": f"Recommend 10 movies strictly matching '{query}'. Return ONLY JSON list of strings."}]
@@ -93,6 +105,10 @@ class UserRequest(BaseModel): text: str; top_k: int = 12; model: str = "internal
 class PersonalizedRequest(BaseModel): text: str; top_k: int = 12; model: str = "internal"
 class AuthRequest(BaseModel): username: str; email: str; password: str
 class SimilarRequest(BaseModel): id: int
+
+@app.get("/")
+def health_check():
+    return {"status": "online", "message": "Nexus Neural Engine is Running 🦅"}
 
 @app.post("/login")
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):

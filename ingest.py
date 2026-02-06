@@ -2,10 +2,22 @@ import pandas as pd
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
 import os
+from dotenv import load_dotenv
 
-# --- CONFIG ---
-# Local Mode: Saves to folder so we don't need Docker
-client = QdrantClient(path="qdrant_storage") 
+# --- CONFIGURATION (CLOUD VS LOCAL) ---
+load_dotenv() # Load keys from .env
+
+QDRANT_URL = os.getenv("QDRANT_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+
+if QDRANT_URL and QDRANT_API_KEY:
+    print(f"☁️ CONNECTING TO QDRANT CLOUD: {QDRANT_URL}")
+    client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+else:
+    print("📁 USING LOCAL STORAGE (qdrant_storage)")
+    # Local Mode: Saves to folder so we don't need Docker
+    client = QdrantClient(path="qdrant_storage") 
+
 model = SentenceTransformer("all-MiniLM-L6-v2")
 COLLECTION_NAME = "freeme_collection"
 
@@ -64,8 +76,12 @@ except Exception as e:
     exit()
 
 print(f"⚙️ Resetting DB '{COLLECTION_NAME}'...")
-if client.collection_exists(COLLECTION_NAME):
-    client.delete_collection(COLLECTION_NAME)
+try:
+    if client.collection_exists(COLLECTION_NAME):
+        client.delete_collection(COLLECTION_NAME)
+except Exception as e:
+    # Some cloud instances throw error if checking existence differently, safe to ignore
+    pass
 
 client.create_collection(
     collection_name=COLLECTION_NAME,
@@ -107,4 +123,4 @@ for idx, row in df.iterrows():
 if points:
     client.upload_points(collection_name=COLLECTION_NAME, points=points)
 
-print(f"✅ DONE! All items ingested. Restart backend.")
+print(f"✅ DONE! All items ingested into {('CLOUD' if QDRANT_URL else 'LOCAL')}.")
