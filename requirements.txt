@@ -3,15 +3,9 @@ uvicorn==0.27.0
 sqlalchemy==2.0.25
 pydantic==2.6.0
 qdrant-client>=1.7.0
-sentence-transformers==2.3.1
 passlib[bcrypt]==1.7.4
 python-jose[cryptography]
 python-dotenv==1.0.1
 python-multipart==0.0.9
 requests==2.31.0
-pandas==2.2.0
-numpy==1.26.3
-tqdm
 openai
-gunicorn==21.2.0
-huggingface-hub<1.0
