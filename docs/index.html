@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexus | Neural Search</title>
+    <link rel="icon" type="image/png" href="favicon.png">
+    <link rel="stylesheet" href="style.css?v=11000">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700;800&family=Inter:wght@400;600&display=swap"
+        rel="stylesheet">
+
+    <script>
+        (function () {
+            const savedTheme = localStorage.getItem('theme') || 'dark';
+            if (savedTheme === 'light') {
+                document.documentElement.classList.add('light-mode');
+            } else {
+                document.documentElement.classList.remove('light-mode');
+            }
+        })();
+    </script>
+</head>
+
+<body>
+    <canvas id="neural-canvas"></canvas>
+
+    <button id="menu-btn" class="menu-btn">
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+    </button>
+
+    <div class="model-selector" id="model-selector">
+        <div class="selected-model" onclick="window.toggleModelMenu()">
+            <span id="current-model-name">FreeMe Neural</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M6 9l6 6 6-6" />
+            </svg>
+        </div>
+        <div class="model-menu hidden" id="model-menu">
+            <div class="model-option active" onclick="window.selectModel('internal', this)">
+                <div class="opt-title">FreeMe Neural</div>
+                <div class="opt-desc">Custom local embedding model.</div>
+            </div>
+            <div class="model-option" onclick="window.selectModel('api', this)">
+                <div class="opt-title">Trinity (Thinking)</div>
+                <div class="opt-desc">Advanced reasoning API.</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="sidebar" class="sidebar">
+        <div class="hud-header">SYSTEM HUD</div>
+        <div class="status-box">
+            <div class="status-indicator" id="status-indicator"></div><span id="status-text">OFFLINE</span>
+        </div>
+        <div class="nav-menu">
+            <div class="nav-item active" onclick="window.returnToMain()">NEURAL SEARCH</div>
+            <div class="nav-item" id="nav-wishlist">♥ WISHLIST</div>
+            <div class="nav-item" id="nav-history">↺ HISTORY</div>
+            <div class="nav-item" id="nav-about">ⓘ ABOUT</div>
+            <div id="nav-auth" class="nav-item" onclick="openAuth()">LOGIN</div>
+        </div>
+        <div class="hud-footer">
+            USER: <span id="hud-user">GUEST</span>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div class="hero">
+            <h1 class="cyber-glitch" data-text="NEXUS">NEXUS</h1>
+            <div class="subtitle">MULTIMODAL INTELLIGENCE ENGINE v9.5</div>
+        </div>
+
+        <div class="search-container">
+            <div class="input-wrapper">
+                <input type="text" id="search-input" placeholder="Describe your mood..." autocomplete="off" />
+                <button id="random-btn" class="icon-btn dice-btn" title="Random">🎲</button>
+                <button id="search-btn" class="icon-btn search-btn" title="Search">➜</button>
+            </div>
+        </div>
+
+        <div id="results-grid" class="results-grid"></div>
+    </div>
+
+    <div id="auth-modal" class="modal hidden">
+        <div class="modal-box auth-box">
+            <button class="modal-close" onclick="closeAuth()">✕</button>
+
+            <div id="login-view">
+                <h2 class="modal-title">ACCESS LOGIN</h2>
+                <div class="auth-forms">
+                    <input id="auth-username" placeholder="Username" autocomplete="off" />
+                    <div class="password-wrap">
+                        <input id="auth-password" type="password" placeholder="Password" />
+                        <span class="toggle-pass" onclick="togglePassword(this)">SHOW</span>
+                    </div>
+                    <button class="primary" onclick="login()">AUTHENTICATE</button>
+                    <button class="secondary" onclick="switchToSignup()">CREATE ID</button>
+                </div>
+            </div>
+
+            <div id="signup-view" class="hidden">
+                <h2 class="modal-title">NEW IDENTITY</h2>
+                <div class="auth-forms">
+                    <input id="su-username" placeholder="Username" autocomplete="off" />
+                    <input id="su-email" placeholder="Email Address" autocomplete="off" />
+                    <div class="password-wrap">
+                        <input id="su-password" type="password" placeholder="Password" />
+                        <span class="toggle-pass" onclick="togglePassword(this)">SHOW</span>
+                    </div>
+                    <div class="password-wrap">
+                        <input id="su-confirm" type="password" placeholder="Confirm Password" />
+                        <span class="toggle-pass" onclick="togglePassword(this)">SHOW</span>
+                    </div>
+                    <button class="primary" onclick="signup()">REGISTER</button>
+                    <button class="secondary" onclick="switchToLogin()">BACK</button>
+                </div>
+            </div>
+            <p id="auth-error"></p>
+        </div>
+    </div>
+
+    <div id="about-modal" class="modal hidden">
+        <div class="modal-box about-box">
+            <button class="modal-close" onclick="closeAbout()">✕</button>
+            <h2 class="modal-title">SYSTEM OVERVIEW</h2>
+
+            <div class="about-content">
+                <div class="about-section">
+                    <h3>INTELLIGENCE CORES</h3>
+                    <div class="model-card">
+                        <div class="mc-header"><span style="color:var(--neon-blue)">FreeMe Neural</span> <span
+                                class="badge">CUSTOM</span></div>
+                        <p>A specialized embedding model <strong>trained personally by the developer</strong>. Optimized
+                            for understanding abstract "vibes" and semantic context beyond simple keywords. It runs
+                            locally for maximum speed.</p>
+                    </div>
+                    <div class="model-card">
+                        <div class="mc-header"><span style="color:#ff0055">Trinity Thinking</span> <span
+                                class="badge">API</span></div>
+                        <p>An external reasoning engine connected via API. It utilizes advanced Large Language Models to
+                            perform complex logical deduction when local patterns are insufficient.</p>
+                    </div>
+                </div>
+
+                <div class="about-section">
+                    <h3>SYSTEM FEATURES</h3>
+                    <ul class="feature-list">
+                        <li><strong>Neural Search:</strong> Type anything ("movies that feel like a rainy Tuesday") and
+                            the engine finds matches based on meaning, not just text.</li>
+                        <li><strong>Wishlist:</strong> Save your discoveries. Click the <span
+                                style="color:#ff0055">♥</span> icon to build your personal database.</li>
+                        <li><strong>History Log:</strong> The system remembers your session queries for quick
+                            backtracking.</li>
+                        <li><strong>Adaptive Interface:</strong> A fully responsive Neural Network background that
+                            reacts to your mouse and system theme (Light/Dark).</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="theme-wrapper">
+        <label class="switch" title="Toggle Theme">
+            <input type="checkbox" id="theme-toggle">
+            <span class="slider">
+                <svg class="icon sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="5"></circle>
+                    <line x1="12" y1="1" x2="12" y2="3"></line>
+                    <line x1="12" y1="21" x2="12" y2="23"></line>
+                    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                    <line x1="1" y1="12" x2="3" y2="12"></line>
+                    <line x1="21" y1="12" x2="23" y2="12"></line>
+                    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                </svg>
+                <svg class="icon moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                </svg>
+            </span>
+        </label>
+    </div>
+
+    <script src="script.js?v=11000"></script>
+</body>
+
+</html>
