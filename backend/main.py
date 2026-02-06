@@ -15,14 +15,13 @@ from dotenv import load_dotenv
 # --- LOAD ENV VARIABLES ---
 load_dotenv()
 
-# 🔑 YOU NEED TO ADD HF_TOKEN IN RENDER DASHBOARD
 HF_TOKEN = os.environ.get("HF_TOKEN") 
 QDRANT_URL = os.environ.get("QDRANT_URL")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
-# API URL for the Embedding Model (Free)
-HF_API_URL = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
+# 🚨 UPDATED URL: Using the new 'router' endpoint
+HF_API_URL = "https://router.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "arcee-ai/trinity-large-preview:free")
 
 app = FastAPI(title="FreeMe Engine (Ultra-Lite)")
@@ -43,7 +42,6 @@ Base.metadata.create_all(bind=engine)
 def get_embedding(text):
     """
     Asks HuggingFace to calculate vector.
-    Zero RAM usage on Render.
     """
     if not HF_TOKEN:
         print("❌ ERROR: Missing HF_TOKEN variable in Render")
@@ -66,6 +64,7 @@ def get_embedding(text):
 
 def get_qdrant():
     from qdrant_client import QdrantClient
+    # This will crash if URL is 'ttps://...'
     return QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
 
 def get_db():
@@ -144,10 +143,7 @@ def signup(data: AuthRequest, db: Session = Depends(get_db)):
 def recommend(req: UserRequest):
     if req.model == 'api': return get_llm_recommendations(req.text) or []
     
-    # 1. Get Vector from API (Zero RAM)
     vector = get_embedding(req.text)
-    
-    # 2. Search Qdrant
     hits = safe_vector_search(vector, limit=50)
     if not hits: return []
     
