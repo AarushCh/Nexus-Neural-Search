@@ -96,7 +96,7 @@ document.addEventListener("DOMContentLoaded", () => {
     new NeuralNetwork();
 
     // --- APP LOGIC ---
-    const API_URL = "http://127.0.0.1:8000";
+    const API_URL = "https://nexus-neural-search.onrender.com";
     let AUTH_TOKEN = localStorage.getItem("freeme_token");
     let CURRENT_USER = localStorage.getItem("freeme_user");
     let WISHLIST_IDS = new Set();
