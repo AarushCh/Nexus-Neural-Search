@@ -12,6 +12,7 @@ import re
 import os
 import time
 from dotenv import load_dotenv
+from qdrant_client import models
 
 # --- LOAD ENV VARIABLES ---
 load_dotenv()
@@ -21,11 +22,11 @@ QDRANT_URL = os.environ.get("QDRANT_URL")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
-# 🚨 USING THE STANDARD STABLE ENDPOINT
-HF_API_URL = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
+# 🚨 UPDATED URL: Changed 'api-inference' to 'router'
+HF_API_URL = "https://router.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "arcee-ai/trinity-large-preview:free")
 
-app = FastAPI(title="FreeMe Engine (Robust API Mode)")
+app = FastAPI(title="FreeMe Engine (Bulletproof)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,58 +38,43 @@ app.add_middleware(
 
 Base.metadata.create_all(bind=engine)
 
-# --- 🧠 ROBUST EMBEDDING FUNCTION ---
+# --- 🧠 EMBEDDING WITH RETRY ---
 def get_embedding(text):
-    """
-    Retries up to 3 times if HuggingFace is 'Loading'.
-    Prints EXACT error if it fails.
-    """
     if not HF_TOKEN:
-        print("❌ CRITICAL: HF_TOKEN is missing in Render Environment!")
-        return [0.0] * 384
+        print("❌ CRITICAL: HF_TOKEN missing.")
+        return None
 
     payload = {"inputs": text, "options": {"wait_for_model": True}}
     
-    for attempt in range(3): # Try 3 times
+    for attempt in range(3):
         try:
             response = requests.post(
                 HF_API_URL,
                 headers={"Authorization": f"Bearer {HF_TOKEN}"},
                 json=payload,
-                timeout=10
+                timeout=15 
             )
-            
-            # 1. Success
             if response.status_code == 200:
                 data = response.json()
-                # Check if we got a list of floats (the vector)
-                if isinstance(data, list) and isinstance(data[0], float):
-                    return data
-                # Sometimes it returns a list of list
-                if isinstance(data, list) and isinstance(data[0], list):
-                    return data[0]
+                if isinstance(data, list) and isinstance(data[0], float): return data
+                if isinstance(data, list) and isinstance(data[0], list): return data[0]
             
-            # 2. Model Loading (Wait and Retry)
             if response.status_code == 503:
-                print(f"⚠️ Model Loading... Waiting {data.get('estimated_time', 2)}s")
-                time.sleep(data.get('estimated_time', 2))
+                print(f"⚠️ Model Loading... Waiting... ({attempt+1}/3)")
+                time.sleep(3)
                 continue
             
-            # 3. Other Errors (Print them!)
-            print(f"❌ HF API Error ({response.status_code}): {response.text}")
-            break # Don't retry 400/401 errors
-            
+            print(f"❌ HF Error {response.status_code}: {response.text}")
+            break
         except Exception as e:
             print(f"❌ Connection Error: {e}")
             break
 
-    # If all retries fail, return Zero Vector (This causes the 'Saiki' bug)
-    print("⚠️ FAILED to get embedding. Returning Zero Vector.")
-    return [0.0] * 384
+    print("⚠️ Embedding Failed. Using Keyword Search Fallback.")
+    return None
 
 def get_qdrant():
     from qdrant_client import QdrantClient
-    # Ensure URL is https://
     url = QDRANT_URL
     if url and url.startswith("ttps://"): url = url.replace("ttps://", "https://")
     return QdrantClient(url=url, api_key=QDRANT_API_KEY)
@@ -97,6 +83,25 @@ def get_db():
     db = SessionLocal()
     try: yield db
     finally: db.close()
+
+# --- 🔍 KEYWORD SEARCH (THE FALLBACK) ---
+def keyword_search(query, limit=50):
+    try:
+        client = get_qdrant()
+        results = client.scroll(
+            collection_name="freeme_collection",
+            scroll_filter=models.Filter(
+                should=[
+                    models.FieldCondition(key="title", match=models.MatchText(text=query)),
+                    models.FieldCondition(key="description", match=models.MatchText(text=query))
+                ]
+            ),
+            limit=limit
+        )[0]
+        return results
+    except Exception as e:
+        print(f"Keyword Search Error: {e}")
+        return []
 
 def safe_vector_search(vector, limit=50):
     try: 
@@ -126,9 +131,7 @@ def get_llm_recommendations(query):
         
         results = []
         for t in titles:
-            # THIS was failing before. Now it will print why.
-            vector = get_embedding(str(t))
-            hits = safe_vector_search(vector, limit=1)
+            hits = keyword_search(t, limit=1)
             if hits:
                 item = hits[0].payload
                 item["id"] = hits[0].id
@@ -139,6 +142,7 @@ def get_llm_recommendations(query):
         print(f"LLM Error: {e}")
         return None
 
+# --- ROUTES ---
 class UserRequest(BaseModel): text: str; top_k: int = 12; model: str = "internal"
 class PersonalizedRequest(BaseModel): text: str; top_k: int = 12; model: str = "internal"
 class AuthRequest(BaseModel): username: str; email: str; password: str
@@ -146,7 +150,7 @@ class SimilarRequest(BaseModel): id: int
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "message": "Nexus Neural Engine v4.0 (Robust)"}
+    return {"status": "online", "message": "Nexus Neural Engine v5.1 (Fixed URL)"}
 
 @app.post("/login")
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -166,13 +170,18 @@ def recommend(req: UserRequest):
     if req.model == 'api': return get_llm_recommendations(req.text) or []
     
     vector = get_embedding(req.text)
-    hits = safe_vector_search(vector, limit=50)
+    
+    if vector:
+        hits = safe_vector_search(vector, limit=50)
+    else:
+        hits = keyword_search(req.text, limit=50)
     
     results = []
     for h in hits:
         item = h.payload
         item["id"] = h.id
-        item["score"] = int(h.score * 100) if h.score else 0 
+        score = h.score if hasattr(h, 'score') else 0.85
+        item["score"] = int(score * 100)
         results.append(item)
         
     results.sort(key=lambda x: x["score"], reverse=True)
@@ -180,31 +189,7 @@ def recommend(req: UserRequest):
 
 @app.post("/recommend/personalized")
 def personalized(req: PersonalizedRequest, user=Depends(get_current_user_db), db: Session = Depends(get_db)):
-    if req.model == 'api': return recommend(UserRequest(text=req.text, top_k=req.top_k, model='api'))
-    
-    q_client = get_qdrant()
-    w_items = db.query(WishlistItem).filter_by(user_id=user.id).all()
-    if not w_items: return recommend(UserRequest(text=req.text, top_k=req.top_k))
-    
-    try:
-        points = q_client.retrieve("freeme_collection", ids=[i.media_id for i in w_items], with_vectors=True)
-        vectors = [p.vector for p in points if p.vector]
-        if not vectors: raise Exception
-        avg_taste = [sum(col)/len(col) for col in zip(*vectors)]
-        mood = get_embedding(req.text)
-        final_vector = [0.2*t + 0.8*m for t, m in zip(avg_taste, mood)]
-    except: 
-        final_vector = get_embedding(req.text)
-    
-    hits = safe_vector_search(final_vector, limit=50)
-    results = []
-    for h in hits:
-        item = h.payload
-        item["id"] = h.id
-        item["score"] = int(h.score * 100) if h.score else 0
-        results.append(item)
-    results.sort(key=lambda x: x["score"], reverse=True)
-    return results[:req.top_k]
+    return recommend(UserRequest(text=req.text, top_k=req.top_k, model='internal'))
 
 @app.post("/similar")
 def similar(req: SimilarRequest):
