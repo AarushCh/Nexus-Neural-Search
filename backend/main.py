@@ -21,10 +21,11 @@ QDRANT_URL = os.environ.get("QDRANT_URL")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
-HF_API_URL = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2"
+# 🚨 NEW MODEL: BAAI/bge-small-en-v1.5
+HF_API_URL = "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5"
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "arcee-ai/trinity-large-preview:free")
 
-app = FastAPI(title="FreeMe Engine (Bulletproof)")
+app = FastAPI(title="FreeMe Engine (Final)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,10 +55,10 @@ def get_embedding(text):
             )
             if response.status_code == 200:
                 data = response.json()
-                # 🚨 FIX: Handle list of lists
+                # Handle list of lists [[0.1, ...]]
                 if isinstance(data, list):
                     if len(data) > 0 and isinstance(data[0], list):
-                        return data[0] # Return the first vector
+                        return data[0]
                     return data
             
             if response.status_code == 503:
@@ -149,7 +150,7 @@ class SimilarRequest(BaseModel): id: int
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "message": "Nexus Neural Engine v5.2 (List Fix)"}
+    return {"status": "online", "message": "Nexus Neural Engine v6.0 (BAAI Model)"}
 
 @app.post("/login")
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
