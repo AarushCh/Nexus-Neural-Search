@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct
 
-# Load your cloud credentials
 load_dotenv()
 
 QDRANT_URL = os.getenv("QDRANT_URL")
@@ -17,18 +16,15 @@ if not QDRANT_URL or not QDRANT_API_KEY or not HF_TOKEN:
     print("❌ Error: Missing credentials in .env file!")
     exit()
 
-# Fix the URL if it has the "ttps" typo locally
 if QDRANT_URL.startswith("ttps://"): 
     QDRANT_URL = QDRANT_URL.replace("ttps://", "https://")
 
 print(f"☁️ Connecting to: {QDRANT_URL}...")
 client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
 
-# 1. Define the Collection
 COLLECTION_NAME = "freeme_collection"
 VECTOR_SIZE = 384 
 
-# 2. Re-Create Collection (Safe Mode)
 try:
     client.delete_collection(COLLECTION_NAME)
     print("🗑️  Deleted old collection.")
@@ -41,7 +37,6 @@ client.create_collection(
 )
 print("Cb  Created fresh collection.")
 
-# 3. The Movie Data
 movies = [
     {"title": "Inception", "description": "A thief who steals corporate secrets through the use of dream-sharing technology.", "type": "MOVIE", "rating": 8.8, "image": "https://image.tmdb.org/t/p/w500/9gk7adHYeDvHkCSEqAvQNLV5Uge.jpg"},
     {"title": "Interstellar", "description": "A team of explorers travel through a wormhole in space in an attempt to ensure humanity's survival.", "type": "MOVIE", "rating": 8.6, "image": "https://image.tmdb.org/t/p/w500/gEU2QniL6C8z1dY4rer3387P38t.jpg"},
@@ -57,7 +52,6 @@ movies = [
 
 print(f"🚀 Uploading {len(movies)} movies...")
 
-# 🚨 CORRECT URL FOR ROUTER 🚨
 api_url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2"
 
 points = []
@@ -68,14 +62,17 @@ for i, movie in enumerate(movies):
     vector = None
     for attempt in range(3):
         try:
+            # 🚨 FIX: Wrap text in a LIST [text]
             response = requests.post(
                 api_url, 
                 headers={"Authorization": f"Bearer {HF_TOKEN}"}, 
-                json={"inputs": text}
+                json={"inputs": [text]} 
             )
             if response.status_code == 200:
-                vector = response.json()
-                if isinstance(vector, list) and isinstance(vector[0], list): vector = vector[0]
+                data = response.json()
+                # 🚨 FIX: The result is now [[0.1, 0.2...]], so we take index [0]
+                if isinstance(data, list):
+                    vector = data[0] if isinstance(data[0], list) else data
                 break
             elif response.status_code == 503:
                 print("   ⏳ Model loading... waiting 3s")

@@ -14,7 +14,6 @@ import time
 from dotenv import load_dotenv
 from qdrant_client import models
 
-# --- LOAD ENV VARIABLES ---
 load_dotenv()
 
 HF_TOKEN = os.environ.get("HF_TOKEN")
@@ -22,7 +21,6 @@ QDRANT_URL = os.environ.get("QDRANT_URL")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
-# 🚨 UPDATED URL: Changed 'api-inference' to 'router'
 HF_API_URL = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2"
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "arcee-ai/trinity-large-preview:free")
 
@@ -38,13 +36,13 @@ app.add_middleware(
 
 Base.metadata.create_all(bind=engine)
 
-# --- 🧠 EMBEDDING WITH RETRY ---
 def get_embedding(text):
     if not HF_TOKEN:
         print("❌ CRITICAL: HF_TOKEN missing.")
         return None
 
-    payload = {"inputs": text, "options": {"wait_for_model": True}}
+    # 🚨 FIX: Input must be a list [text]
+    payload = {"inputs": [text], "options": {"wait_for_model": True}}
     
     for attempt in range(3):
         try:
@@ -56,8 +54,11 @@ def get_embedding(text):
             )
             if response.status_code == 200:
                 data = response.json()
-                if isinstance(data, list) and isinstance(data[0], float): return data
-                if isinstance(data, list) and isinstance(data[0], list): return data[0]
+                # 🚨 FIX: Handle list of lists
+                if isinstance(data, list):
+                    if len(data) > 0 and isinstance(data[0], list):
+                        return data[0] # Return the first vector
+                    return data
             
             if response.status_code == 503:
                 print(f"⚠️ Model Loading... Waiting... ({attempt+1}/3)")
@@ -84,7 +85,6 @@ def get_db():
     try: yield db
     finally: db.close()
 
-# --- 🔍 KEYWORD SEARCH (THE FALLBACK) ---
 def keyword_search(query, limit=50):
     try:
         client = get_qdrant()
@@ -142,7 +142,6 @@ def get_llm_recommendations(query):
         print(f"LLM Error: {e}")
         return None
 
-# --- ROUTES ---
 class UserRequest(BaseModel): text: str; top_k: int = 12; model: str = "internal"
 class PersonalizedRequest(BaseModel): text: str; top_k: int = 12; model: str = "internal"
 class AuthRequest(BaseModel): username: str; email: str; password: str
@@ -150,7 +149,7 @@ class SimilarRequest(BaseModel): id: int
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "message": "Nexus Neural Engine v5.1 (Fixed URL)"}
+    return {"status": "online", "message": "Nexus Neural Engine v5.2 (List Fix)"}
 
 @app.post("/login")
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
