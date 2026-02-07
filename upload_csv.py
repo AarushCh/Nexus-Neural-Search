@@ -2,17 +2,18 @@ import os
 import pandas as pd
 import requests
 import time
+import math
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct
 
 # --- CONFIGURATION ---
-CSV_FILE = "dataset.csv"  # Make sure this matches your file name
+CSV_FILE = "dataset.csv" 
 COLLECTION_NAME = "freeme_collection"
-MODEL_ID = "BAAI/bge-small-en-v1.5"
-HF_API_URL = f"https://router.huggingface.co/hf-inference/models/{MODEL_ID}"
+# Using the working BAAI model
+HF_API_URL = "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5"
 VECTOR_SIZE = 384
-BATCH_SIZE = 50  # Upload 50 movies at a time to avoid timeouts
+BATCH_SIZE = 50
 
 load_dotenv()
 
@@ -30,41 +31,71 @@ if QDRANT_URL.startswith("ttps://"):
 print(f"☁️ Connecting to Qdrant Cloud...")
 client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
 
-# 1. Load CSV
+# 1. Load CSV & Inspect Columns
 if not os.path.exists(CSV_FILE):
     print(f"❌ Error: Could not find {CSV_FILE}")
     exit()
 
 print(f"📖 Reading {CSV_FILE}...")
 df = pd.read_csv(CSV_FILE)
+print(f"🔍 YOUR CSV COLUMNS: {list(df.columns)}") # <--- READ THIS IN THE LOGS IF IT FAILS!
 
-# Fill missing values to avoid errors
-df = df.fillna("")
-print(f"📊 Found {len(df)} movies. Starting upload...")
+# 2. Reset Collection (Clean Slate to remove "Ghost Data")
+try:
+    client.delete_collection(COLLECTION_NAME)
+    print("🗑️  Wiped old collection (Goodbye Ghost Data).")
+except:
+    pass
 
-# 2. Reset Collection (Optional: Uncomment to wipe old 10 movies)
-# client.recreate_collection(
-#     collection_name=COLLECTION_NAME,
-#     vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
-# )
+client.create_collection(
+    collection_name=COLLECTION_NAME,
+    vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+)
+print("✅ Created fresh collection.")
 
-# 3. Batch Upload
+# --- SMART COLUMN MAPPING ---
+def get_column_value(row, possible_names, default=""):
+    for name in possible_names:
+        # Case-insensitive check
+        for col in row.index:
+            if col.lower() == name.lower():
+                val = row[col]
+                if pd.isna(val) or val == "":
+                    return default
+                return val
+    return default
+
+print(f"📊 Processing {len(df)} rows...")
+
 total_uploaded = 0
 points_batch = []
 
 for index, row in df.iterrows():
-    # Construct text for embedding
-    # Adjust column names 'title', 'overview', 'vote_average' to match YOUR CSV
-    title = row.get('title', row.get('Title', 'Unknown'))
-    desc = row.get('overview', row.get('Description', ''))
-    rating = row.get('vote_average', row.get('Rating', 0))
-    image = row.get('poster_path', row.get('Image', ''))
-    media_type = row.get('media_type', 'MOVIE')
+    # Try multiple names for each field
+    title = get_column_value(row, ['title', 'original_title', 'Series_Title', 'Name'], "Unknown")
+    desc = get_column_value(row, ['overview', 'description', 'summary', 'plot', 'Synopsis'], "")
+    rating = get_column_value(row, ['vote_average', 'rating', 'IMDB_Rating', 'Score'], 0)
+    image = get_column_value(row, ['poster_path', 'poster', 'image', 'Poster_Link'], "")
+    media_type = get_column_value(row, ['media_type', 'type', 'Genre'], "MOVIE")
 
-    # Quick cleanup for image URL if it's just a path
-    if image and str(image).startswith("/"):
+    # --- 🧹 DATA CLEANING (The Filter) ---
+    
+    # 1. Fix Image URL
+    image = str(image).strip()
+    if image.startswith("/"):
         image = f"https://image.tmdb.org/t/p/w500{image}"
+    
+    # 2. Skip JUNK Data (Fixes "No data" issue)
+    if not desc or len(str(desc)) < 20 or str(desc).lower() == "no data.":
+        print(f"   ⚠️ Skipped (No Description): {title}")
+        continue
 
+    # 3. Skip Missing Images (Fixes black cards)
+    if not image or len(image) < 5 or "nan" in image.lower():
+        print(f"   ⚠️ Skipped (No Image): {title}")
+        continue
+
+    # 4. Construct Search Text
     text = f"{title} {desc}"
     
     # --- GET EMBEDDING ---
@@ -88,31 +119,30 @@ for index, row in df.iterrows():
         except:
             break
     
-    # If embedding succeeded, add to batch
     if vector and len(vector) == VECTOR_SIZE:
         payload = {
             "title": title,
-            "description": desc,
+            "description": str(desc)[:500] + "...", # Truncate long descriptions
             "rating": float(rating) if rating else 0,
-            "type": str(media_type).upper(),
-            "image": str(image)
+            "type": str(media_type).split(",")[0].upper(), # Clean genre/type
+            "image": image
         }
         points_batch.append(PointStruct(id=index+1, vector=vector, payload=payload))
         print(f"   ✅ Prepared: {title}")
     else:
         print(f"   ⚠️ Skipped (Embedding Failed): {title}")
 
-    # Upload when batch is full
+    # Upload Batch
     if len(points_batch) >= BATCH_SIZE:
         client.upsert(collection_name=COLLECTION_NAME, points=points_batch)
         total_uploaded += len(points_batch)
         print(f"🚀 Uploaded batch! Total: {total_uploaded}")
-        points_batch = [] # Reset batch
-        time.sleep(1) # Be nice to the API
+        points_batch = [] 
+        time.sleep(0.5)
 
-# Upload any remaining
+# Upload remaining
 if points_batch:
     client.upsert(collection_name=COLLECTION_NAME, points=points_batch)
     total_uploaded += len(points_batch)
 
-print(f"🎉 FINAL SUCCESS! Uploaded {total_uploaded} movies to the Cloud.")
+print(f"🎉 FINAL SUCCESS! Uploaded {total_uploaded} clean movies.")

@@ -14,18 +14,19 @@ import time
 from dotenv import load_dotenv
 from qdrant_client import models
 
+# --- CONFIGURATION ---
 load_dotenv()
 
 HF_TOKEN = os.environ.get("HF_TOKEN")
 QDRANT_URL = os.environ.get("QDRANT_URL")
-QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
-# 🚨 NEW MODEL: BAAI/bge-small-en-v1.5
+# Model: BAAI/bge-small-en-v1.5
 HF_API_URL = "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5"
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "arcee-ai/trinity-large-preview:free")
 
-app = FastAPI(title="FreeMe Engine (Final)")
+app = FastAPI(title="FreeMe Engine (Hybrid Fill)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,12 +38,14 @@ app.add_middleware(
 
 Base.metadata.create_all(bind=engine)
 
+# --- 🧠 CORE AI FUNCTIONS ---
+
 def get_embedding(text):
     if not HF_TOKEN:
         print("❌ CRITICAL: HF_TOKEN missing.")
         return None
 
-    # 🚨 FIX: Input must be a list [text]
+    # Input must be a list [text]
     payload = {"inputs": [text], "options": {"wait_for_model": True}}
     
     for attempt in range(3):
@@ -55,24 +58,17 @@ def get_embedding(text):
             )
             if response.status_code == 200:
                 data = response.json()
-                # Handle list of lists [[0.1, ...]]
                 if isinstance(data, list):
                     if len(data) > 0 and isinstance(data[0], list):
                         return data[0]
                     return data
             
             if response.status_code == 503:
-                print(f"⚠️ Model Loading... Waiting... ({attempt+1}/3)")
                 time.sleep(3)
                 continue
-            
-            print(f"❌ HF Error {response.status_code}: {response.text}")
             break
-        except Exception as e:
-            print(f"❌ Connection Error: {e}")
+        except:
             break
-
-    print("⚠️ Embedding Failed. Using Keyword Search Fallback.")
     return None
 
 def get_qdrant():
@@ -86,7 +82,8 @@ def get_db():
     try: yield db
     finally: db.close()
 
-def keyword_search(query, limit=50):
+def keyword_search(query, limit=1):
+    """Finds exact movie by title text"""
     try:
         client = get_qdrant()
         results = client.scroll(
@@ -94,63 +91,92 @@ def keyword_search(query, limit=50):
             scroll_filter=models.Filter(
                 should=[
                     models.FieldCondition(key="title", match=models.MatchText(text=query)),
-                    models.FieldCondition(key="description", match=models.MatchText(text=query))
                 ]
             ),
             limit=limit
         )[0]
         return results
-    except Exception as e:
-        print(f"Keyword Search Error: {e}")
+    except:
         return []
 
 def safe_vector_search(vector, limit=50):
     try: 
         q_client = get_qdrant()
         return q_client.query_points(collection_name="freeme_collection", query=vector, limit=limit).points
-    except Exception as e:
-        print(f"Vector Search Error: {e}")
+    except:
         return []
 
 def get_llm_recommendations(query):
+    """
+    1. Ask Trinity for 10 ideas.
+    2. Find the ones we actually have in DB.
+    3. If we have < 12 results, fill the rest with standard Vector Search.
+    """
+    final_results = []
+    seen_ids = set()
+
+    # --- STEP 1: TRINITY THINKING ---
     try:
-        if not OPENROUTER_API_KEY: return None
-        
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "HTTP-Referer": "http://nexus-search.com"},
-            data=json.dumps({
-                "model": OPENROUTER_MODEL,
-                "messages": [{"role": "user", "content": f"Recommend 10 movies strictly matching '{query}'. Return ONLY JSON list of strings."}]
-            }), timeout=15
-        )
-        if resp.status_code != 200: return None
-        content = resp.json()['choices'][0]['message']['content']
-        match = re.search(r'\[.*\]', content, re.DOTALL)
-        if not match: return None
-        titles = json.loads(match.group())
-        
-        results = []
-        for t in titles:
-            hits = keyword_search(t, limit=1)
-            if hits:
-                item = hits[0].payload
-                item["id"] = hits[0].id
-                item["score"] = 99
-                results.append(item)
-        return results
+        if OPENROUTER_API_KEY:
+            resp = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "HTTP-Referer": "http://nexus-search.com"},
+                data=json.dumps({
+                    "model": OPENROUTER_MODEL,
+                    "messages": [{"role": "user", "content": f"Recommend 12 movies strictly matching '{query}'. Return ONLY JSON list of strings."}]
+                }), timeout=15
+            )
+            if resp.status_code == 200:
+                content = resp.json()['choices'][0]['message']['content']
+                match = re.search(r'\[.*\]', content, re.DOTALL)
+                if match:
+                    titles = json.loads(match.group())
+                    # Check if we have these movies
+                    for t in titles:
+                        hits = keyword_search(t, limit=1)
+                        if hits:
+                            h = hits[0]
+                            if h.id not in seen_ids:
+                                item = h.payload
+                                item["id"] = h.id
+                                item["score"] = 99 # Trinity picks get high score
+                                final_results.append(item)
+                                seen_ids.add(h.id)
     except Exception as e:
-        print(f"LLM Error: {e}")
-        return None
+        print(f"LLM Failed: {e}")
+
+    # --- STEP 2: THE BACKFILL (Ensure 12 Tiles) ---
+    slots_needed = 12 - len(final_results)
+    
+    if slots_needed > 0:
+        print(f"⚠️ Trinity only found {len(final_results)}. Backfilling {slots_needed} from Vector DB.")
+        vector = get_embedding(query)
+        if vector:
+            # Fetch extra to account for duplicates
+            hits = safe_vector_search(vector, limit=slots_needed + 10)
+            for h in hits:
+                if h.id not in seen_ids:
+                    item = h.payload
+                    item["id"] = h.id
+                    item["score"] = int(h.score * 100) if h.score else 85
+                    final_results.append(item)
+                    seen_ids.add(h.id)
+                    
+                    if len(final_results) >= 12:
+                        break
+
+    return final_results
+
+# --- ROUTES ---
 
 class UserRequest(BaseModel): text: str; top_k: int = 12; model: str = "internal"
 class PersonalizedRequest(BaseModel): text: str; top_k: int = 12; model: str = "internal"
 class AuthRequest(BaseModel): username: str; email: str; password: str
-class SimilarRequest(BaseModel): id: int
+class SimilarRequest(BaseModel): id: str # Changed to str to support UUIDs
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "message": "Nexus Neural Engine v6.0 (BAAI Model)"}
+    return {"status": "online", "message": "Nexus Hybrid Engine v7.0"}
 
 @app.post("/login")
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -167,47 +193,71 @@ def signup(data: AuthRequest, db: Session = Depends(get_db)):
 
 @app.post("/recommend")
 def recommend(req: UserRequest):
-    if req.model == 'api': return get_llm_recommendations(req.text) or []
+    # If model is API (Trinity), use the smart hybrid function
+    if req.model == 'api': 
+        return get_llm_recommendations(req.text)
     
+    # Standard Vector Search
     vector = get_embedding(req.text)
-    
-    if vector:
-        hits = safe_vector_search(vector, limit=50)
-    else:
-        hits = keyword_search(req.text, limit=50)
-    
+    if not vector: 
+        # Emergency keyword fallback if embedding fails completely
+        hits = keyword_search(req.text, limit=12)
+        results = []
+        for h in hits:
+            item = h.payload
+            item["id"] = h.id
+            item["score"] = 80
+            results.append(item)
+        return results
+
+    hits = safe_vector_search(vector, limit=req.top_k)
     results = []
     for h in hits:
         item = h.payload
         item["id"] = h.id
-        score = h.score if hasattr(h, 'score') else 0.85
-        item["score"] = int(score * 100)
+        item["score"] = int(h.score * 100) if h.score else 0 
         results.append(item)
         
-    results.sort(key=lambda x: x["score"], reverse=True)
-    return results[:req.top_k]
+    return results
 
 @app.post("/recommend/personalized")
 def personalized(req: PersonalizedRequest, user=Depends(get_current_user_db), db: Session = Depends(get_db)):
+    # Personalization is complex with Trinity, so we default to standard Hybrid for now
+    if req.model == 'api': 
+        return get_llm_recommendations(req.text)
+    
     return recommend(UserRequest(text=req.text, top_k=req.top_k, model='internal'))
 
 @app.post("/similar")
 def similar(req: SimilarRequest):
     q_client = get_qdrant()
+    # Retrieve the vector of the clicked movie
     tgt = q_client.retrieve("freeme_collection", ids=[req.id], with_vectors=True)
     if not tgt: return []
-    hits = safe_vector_search(tgt[0].vector, limit=15)
-    return [{**h.payload, 'id': h.id, 'score': 95} for h in hits if h.id!=req.id][:4]
+    
+    # Search for nearest neighbors
+    hits = safe_vector_search(tgt[0].vector, limit=13) # Get 13, remove self
+    
+    results = []
+    for h in hits:
+        # Don't show the movie itself in recommendations
+        if str(h.id) != str(req.id):
+            item = h.payload
+            item["id"] = h.id
+            item["score"] = 95
+            results.append(item)
+            
+    return results[:12]
 
 @app.post("/wishlist/add/{mid}")
-def add_w(mid: int, u=Depends(get_current_user_db), db: Session = Depends(get_db)):
+def add_w(mid: str, u=Depends(get_current_user_db), db: Session = Depends(get_db)):
     if not db.query(WishlistItem).filter_by(user_id=u.id, media_id=mid).first():
         db.add(WishlistItem(user_id=u.id, media_id=mid))
         db.commit()
     return {"status": "ok"}
 
 @app.delete("/wishlist/remove/{mid}")
-def rem_w(mid: int, u=Depends(get_current_user_db), db: Session = Depends(get_db)):
+def rem_w(mid: str, u=Depends(get_current_user_db), db: Session = Depends(get_db)):
     db.query(WishlistItem).filter_by(user_id=u.id, media_id=mid).delete()
     db.commit()
     return {"status": "ok"}
@@ -217,7 +267,14 @@ def get_w(u=Depends(get_current_user_db), db: Session = Depends(get_db)):
     q_client = get_qdrant()
     ids = [i.media_id for i in db.query(WishlistItem).filter_by(user_id=u.id).all()]
     if not ids: return []
-    try: return [{**p.payload, 'id': p.id} for p in q_client.retrieve("freeme_collection", ids=ids)]
+    try: 
+        points = q_client.retrieve("freeme_collection", ids=ids)
+        results = []
+        for p in points:
+            item = p.payload
+            item["id"] = p.id
+            results.append(item)
+        return results
     except: return []
 
 if __name__ == "__main__":
