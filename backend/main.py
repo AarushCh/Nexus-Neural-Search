@@ -78,13 +78,13 @@ def safe_vector_search(vector, limit=50):
         return q_client.query_points(collection_name="freeme_collection", query=vector, limit=limit).points
     except: return []
 
-# --- 🧠 GOD MODE GENERATOR ---
+# --- 🧠 GOD MODE GENERATOR (DEBUG VERSION) ---
 def get_llm_recommendations(query):
     print(f"🧠 TRINITY GOD MODE: Generating fresh data for '{query}'...") 
 
     try:
         if not OPENROUTER_API_KEY:
-            print("❌ ERROR: No API Key.")
+            print("❌ CRITICAL ERROR: OPENROUTER_API_KEY is missing in Render Environment!")
             return []
 
         # 1. Ask Trinity to be the Database
@@ -103,24 +103,30 @@ def get_llm_recommendations(query):
         Do NOT include markdown formatting (like ```json). Just the raw JSON array.
         """
         
+        print("   ➡️ Sending request to OpenRouter...")
+        
         resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
+            "[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)",
             headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}", 
-                "HTTP-Referer": "http://nexus-search.com",
+                "HTTP-Referer": "[http://nexus-search.com](http://nexus-search.com)",
                 "Content-Type": "application/json"
             },
             data=json.dumps({
                 "model": OPENROUTER_MODEL,
                 "messages": [{"role": "user", "content": prompt}]
             }), 
-            timeout=25
+            timeout=30
         )
         
+        print(f"   ⬅️ Received Status Code: {resp.status_code}")
+
         if resp.status_code == 200:
             content = resp.json()['choices'][0]['message']['content']
+            # Clean possible markdown
             clean_content = re.sub(r'```json|```', '', content).strip()
             
+            # Find the JSON array
             match = re.search(r'\[.*\]', clean_content, re.DOTALL)
             if match:
                 data = json.loads(match.group())
@@ -129,26 +135,30 @@ def get_llm_recommendations(query):
                 for item in data:
                     # ✨ MAGIC: Create a working image link using AI Art
                     safe_title = re.sub(r'[^a-zA-Z0-9 ]', '', item['title'])
-                    
-                    # ✅ FIXED LINE: Clean URL string
                     image_url = f"[https://image.pollinations.ai/prompt/movie](https://image.pollinations.ai/prompt/movie) poster for {safe_title} minimalist 4k?width=400&height=600&nologo=true"
                     
                     results.append({
-                        "id": f"ai-{uuid.uuid4()}", 
+                        "id": f"ai-{uuid.uuid4()}",
                         "title": item.get('title', 'Unknown'),
                         "description": item.get('description', 'AI Generated.'),
                         "rating": item.get('rating', 0),
                         "type": item.get('type', 'MOVIE').upper(),
-                        "image": image_url, 
-                        "score": 99 
+                        "image": image_url,
+                        "score": 99
                     })
                 
-                print(f"✨ Generated {len(results)} AI tiles.")
+                print(f"✨ SUCCESS: Generated {len(results)} AI tiles.")
                 return results
+            else:
+                print(f"⚠️ PARSE ERROR: Could not find JSON in response: {content[:100]}...")
+        else:
+            # 🚨 THIS IS WHAT WAS MISSING BEFORE
+            print(f"❌ API ERROR: {resp.text}")
 
     except Exception as e:
-        print(f"❌ TRINITY CRASH: {e}")
+        print(f"❌ CRASH: {e}")
 
+    print("⚠️ Fallback: Returning empty list (triggering standard search).")
     return []
 
 # --- ROUTES ---
