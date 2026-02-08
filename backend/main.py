@@ -11,7 +11,7 @@ import json
 import re
 import os
 import time
-import uuid  # <--- CRITICAL: Needed for God Mode fake IDs
+import uuid
 from dotenv import load_dotenv
 from qdrant_client import models
 
@@ -23,9 +23,8 @@ QDRANT_URL = os.environ.get("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
-# Model: BAAI/bge-small-en-v1.5 (For Vector Search Fallback)
+# Model: BAAI/bge-small-en-v1.5
 HF_API_URL = "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5"
-# Model: Mistral 7B (For God Mode Generation)
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct:free")
 
 app = FastAPI(title="Nexus God Mode Engine")
@@ -79,7 +78,7 @@ def safe_vector_search(vector, limit=50):
         return q_client.query_points(collection_name="freeme_collection", query=vector, limit=limit).points
     except: return []
 
-# --- 🧠 GOD MODE GENERATOR (THE NEW LOGIC) ---
+# --- 🧠 GOD MODE GENERATOR ---
 def get_llm_recommendations(query):
     print(f"🧠 TRINITY GOD MODE: Generating fresh data for '{query}'...") 
 
@@ -88,7 +87,7 @@ def get_llm_recommendations(query):
             print("❌ ERROR: No API Key.")
             return []
 
-        # 1. Ask Trinity to be the Database (Generates Title, Desc, Rating)
+        # 1. Ask Trinity to be the Database
         prompt = f"""
         You are a movie database API. 
         User Request: "{query}"
@@ -115,33 +114,33 @@ def get_llm_recommendations(query):
                 "model": OPENROUTER_MODEL,
                 "messages": [{"role": "user", "content": prompt}]
             }), 
-            timeout=25 # Increased timeout for long generation
+            timeout=25
         )
         
         if resp.status_code == 200:
             content = resp.json()['choices'][0]['message']['content']
-            # Clean possible markdown
             clean_content = re.sub(r'```json|```', '', content).strip()
             
-            # Find the JSON array
             match = re.search(r'\[.*\]', clean_content, re.DOTALL)
             if match:
                 data = json.loads(match.group())
                 results = []
                 
                 for item in data:
-                    # ✨ MAGIC: Create a working image link using AI Art (Pollinations)
+                    # ✨ MAGIC: Create a working image link using AI Art
                     safe_title = re.sub(r'[^a-zA-Z0-9 ]', '', item['title'])
+                    
+                    # ✅ FIXED LINE: Clean URL string
                     image_url = f"[https://image.pollinations.ai/prompt/movie](https://image.pollinations.ai/prompt/movie) poster for {safe_title} minimalist 4k?width=400&height=600&nologo=true"
                     
                     results.append({
-                        "id": f"ai-{uuid.uuid4()}", # Fake ID so React doesn't crash
+                        "id": f"ai-{uuid.uuid4()}", 
                         "title": item.get('title', 'Unknown'),
                         "description": item.get('description', 'AI Generated.'),
                         "rating": item.get('rating', 0),
                         "type": item.get('type', 'MOVIE').upper(),
-                        "image": image_url, # The AI Image
-                        "score": 99 # It's a perfect match because AI said so
+                        "image": image_url, 
+                        "score": 99 
                     })
                 
                 print(f"✨ Generated {len(results)} AI tiles.")
@@ -150,7 +149,7 @@ def get_llm_recommendations(query):
     except Exception as e:
         print(f"❌ TRINITY CRASH: {e}")
 
-    return [] # Fallback will trigger if this returns empty
+    return []
 
 # --- ROUTES ---
 
@@ -177,7 +176,7 @@ def signup(data: AuthRequest, db: Session = Depends(get_db)):
 
 @app.post("/recommend")
 def recommend(req: UserRequest):
-    # 1. If user wants AI (Trinity), use God Mode
+    # 1. If user wants AI (Trinity)
     if req.model == 'api':
         results = get_llm_recommendations(req.text)
         if results: return results
@@ -197,7 +196,7 @@ def recommend(req: UserRequest):
 
 @app.post("/recommend/personalized")
 def personalized(req: PersonalizedRequest, user=Depends(get_current_user_db)):
-    # Redirect to standard recommend logic for God Mode
+    # Same logic for now
     return recommend(UserRequest(text=req.text, top_k=req.top_k, model=req.model))
 
 @app.post("/similar")
@@ -207,11 +206,9 @@ def similar(req: SimilarRequest):
     # 🕵️‍♂️ DETECT GHOST ID (AI Generated)
     if str(req.id).startswith("ai-"):
         # We can't look up an AI ID in the database.
-        # Simple fix: Return empty list so UI doesn't crash, 
-        # or you could trigger another AI generation here if you wanted.
         return [] 
 
-    # Normal Database ID Logic
+    # Normal Database ID
     try:
         tgt = q_client.retrieve("freeme_collection", ids=[req.id], with_vectors=True)
         if not tgt: return []
@@ -229,7 +226,7 @@ def similar(req: SimilarRequest):
 
 @app.post("/wishlist/add/{mid}")
 def add_w(mid: str, u=Depends(get_current_user_db), db: Session = Depends(get_db)):
-    # AI IDs can't be saved to DB because they aren't real records in Qdrant
+    # AI IDs can't be saved permanently to Wishlist because they don't exist in DB
     if mid.startswith("ai-"):
         raise HTTPException(status_code=400, detail="Cannot save AI-generated dreams yet.")
         
