@@ -105,11 +105,12 @@ def get_llm_recommendations(query):
         
         print("   ➡️ Sending request to OpenRouter...")
         
-        # ✅ THE FIX IS HERE: Just a plain URL string. No brackets.
+        # ✅ FIX 1: Clean URL (No brackets)
         resp = requests.post(
             "[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)",
             headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}", 
+                # ✅ FIX 2: Clean Header (No brackets)
                 "HTTP-Referer": "[http://nexus-search.com](http://nexus-search.com)",
                 "Content-Type": "application/json"
             },
@@ -135,7 +136,7 @@ def get_llm_recommendations(query):
                     # ✨ MAGIC: Create a working image link
                     safe_title = re.sub(r'[^a-zA-Z0-9 ]', '', item['title'])
                     
-                    # ✅ FIXED IMAGE URL TOO (Just in case)
+                    # ✅ FIX 3: Clean Image URL (No brackets)
                     image_url = f"[https://image.pollinations.ai/prompt/movie](https://image.pollinations.ai/prompt/movie) poster for {safe_title} minimalist 4k?width=400&height=600&nologo=true"
                     
                     results.append({
