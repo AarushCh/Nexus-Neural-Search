@@ -626,10 +626,12 @@ input#search-input:focus {
 .results-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 20px;
+    /* Force 4 columns */
+    gap: 24px;
     padding: 20px 40px;
     max-width: 1600px;
     margin: 0 auto;
+    width: 100%;
 }
 
 @media (max-width: 1024px) {
@@ -648,43 +650,43 @@ input#search-input:focus {
 .card {
     background: var(--bg-card);
     border: 1px solid var(--border-color);
-    border-radius: 16px;
+    border-radius: 12px;
     overflow: hidden;
     display: flex;
     flex-direction: column;
     position: relative;
     backdrop-filter: blur(12px);
-    transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    animation: fadeIn 0.5s ease-out forwards;
-    opacity: 0;
-    transform: translateY(20px);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     min-width: 0;
+    animation: fadeIn 0.5s ease-out forwards;
 }
 
 .card:hover {
-    transform: translateY(-10px) scale(1.02);
-    box-shadow: 0 10px 30px rgba(0, 243, 255, 0.15);
+    transform: translateY(-8px);
+    box-shadow: 0 12px 40px rgba(0, 243, 255, 0.15);
     border-color: var(--neon-blue);
-    z-index: 10;
+    z-index: 2;
 }
 
 .card:hover .card-media-wrapper img {
-    transform: scale(1.05);
+    transform: scale(1.08);
 }
 
 .card-media-wrapper {
     width: 100%;
     aspect-ratio: 2 / 3;
-    overflow: hidden;
     position: relative;
-    border-radius: 12px;
+    background: #0b0b0f;
+    overflow: hidden;
 }
 
 .card-media-wrapper img {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    transition: transform 0.5s ease;
+    display: block;
+    transition: transform 0.5s ease, opacity 0.5s ease;
+    opacity: 1;
 }
 
 .card img {
@@ -694,7 +696,6 @@ input#search-input:focus {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    opacity: 0;
     transition: 0.5s;
 }
 
@@ -705,11 +706,36 @@ input#search-input:focus {
 .match-bar-track {
     position: absolute;
     bottom: 0;
+    left: 0;
     width: 100%;
-    background: linear-gradient(to top, rgba(0, 0, 0, 0.9), transparent);
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, transparent 100%);
     padding: 15px;
-    display: flex;
-    justify-content: space-between;
+    z-index: 2;
+    pointer-events: none;
+}
+
+@media (max-width: 1200px) {
+    .results-grid {
+        grid-template-columns: repeat(3, 1fr);
+        /* 3 columns on smaller laptops */
+        padding: 20px;
+    }
+}
+
+@media (max-width: 900px) {
+    .results-grid {
+        grid-template-columns: repeat(2, 1fr);
+        /* 2 columns on tablets */
+    }
+}
+
+@media (max-width: 500px) {
+    .results-grid {
+        grid-template-columns: 1fr;
+        /* 1 column on mobile */
+        padding: 15px;
+        gap: 20px;
+    }
 }
 
 .match-label-base {
