@@ -104,10 +104,10 @@ def get_llm_recommendations(query):
         """
         
         resp = requests.post(
-            "[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)",
+            "https://openrouter.ai/api/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}", 
-                "HTTP-Referer": "[http://nexus-search.com](http://nexus-search.com)",
+                "HTTP-Referer": "http://nexus-search.com",
                 "Content-Type": "application/json"
             },
             data=json.dumps({
