@@ -14,6 +14,7 @@ import time
 import uuid
 from dotenv import load_dotenv
 from qdrant_client import models
+from openai import OpenAI  # <--- NEW IMPORT
 
 # --- CONFIGURATION ---
 load_dotenv()
@@ -25,6 +26,7 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
 # Model: BAAI/bge-small-en-v1.5
 HF_API_URL = "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5"
+# Default to Mistral, but you can set this to 'nvidia/nemotron-nano-12b-v2-vl:free' in Render Env Vars
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct:free")
 
 app = FastAPI(title="Nexus God Mode Engine")
@@ -78,16 +80,22 @@ def safe_vector_search(vector, limit=50):
         return q_client.query_points(collection_name="freeme_collection", query=vector, limit=limit).points
     except: return []
 
-# --- 🧠 GOD MODE GENERATOR (CLEAN VERSION) ---
+# --- 🧠 GOD MODE GENERATOR (OPENAI CLIENT VERSION) ---
 def get_llm_recommendations(query):
     print(f"🧠 TRINITY GOD MODE: Generating fresh data for '{query}'...") 
 
-    try:
-        if not OPENROUTER_API_KEY:
-            print("❌ ERROR: No API Key.")
-            return []
+    if not OPENROUTER_API_KEY:
+        print("❌ ERROR: No API Key.")
+        return []
 
-        # 1. Ask Trinity to be the Database
+    try:
+        # 1. Initialize OpenAI Client for OpenRouter
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+
+        # 2. Prepare the Prompt
         prompt = f"""
         You are a movie database API. 
         User Request: "{query}"
@@ -103,58 +111,52 @@ def get_llm_recommendations(query):
         Do NOT include markdown formatting (like ```json). Just the raw JSON array.
         """
         
-        print("   ➡️ Sending request to OpenRouter...")
-        
-        # ✅ FIX 1: Clean URL (No brackets)
-        resp = requests.post(
-            "[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}", 
-                # ✅ FIX 2: Clean Header (No brackets)
-                "HTTP-Referer": "[http://nexus-search.com](http://nexus-search.com)",
-                "Content-Type": "application/json"
-            },
-            data=json.dumps({
-                "model": OPENROUTER_MODEL,
-                "messages": [{"role": "user", "content": prompt}]
-            }), 
-            timeout=30
-        )
-        
-        print(f"   ⬅️ Received Status Code: {resp.status_code}")
+        print("   ➡️ Sending request to OpenRouter (via OpenAI Client)...")
 
-        if resp.status_code == 200:
-            content = resp.json()['choices'][0]['message']['content']
-            clean_content = re.sub(r'```json|```', '', content).strip()
+        # 3. Call the API
+        completion = client.chat.completions.create(
+            model=OPENROUTER_MODEL,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            extra_headers={
+                "HTTP-Referer": "[http://nexus-search.com](http://nexus-search.com)",
+            }
+        )
+
+        # 4. Extract Content
+        content = completion.choices[0].message.content
+        print("   ⬅️ Received Response")
+
+        # 5. Clean & Parse JSON
+        clean_content = re.sub(r'```json|```', '', content).strip()
+        match = re.search(r'\[.*\]', clean_content, re.DOTALL)
+        
+        if match:
+            data = json.loads(match.group())
+            results = []
             
-            match = re.search(r'\[.*\]', clean_content, re.DOTALL)
-            if match:
-                data = json.loads(match.group())
-                results = []
+            for item in data:
+                # ✨ MAGIC: Create a working image link
+                safe_title = re.sub(r'[^a-zA-Z0-9 ]', '', item['title'])
                 
-                for item in data:
-                    # ✨ MAGIC: Create a working image link
-                    safe_title = re.sub(r'[^a-zA-Z0-9 ]', '', item['title'])
-                    
-                    # ✅ FIX 3: Clean Image URL (No brackets)
-                    image_url = f"[https://image.pollinations.ai/prompt/movie](https://image.pollinations.ai/prompt/movie) poster for {safe_title} minimalist 4k?width=400&height=600&nologo=true"
-                    
-                    results.append({
-                        "id": f"ai-{uuid.uuid4()}",
-                        "title": item.get('title', 'Unknown'),
-                        "description": item.get('description', 'AI Generated.'),
-                        "rating": item.get('rating', 0),
-                        "type": item.get('type', 'MOVIE').upper(),
-                        "image": image_url,
-                        "score": 99
-                    })
+                # ✅ CLEAN IMAGE URL
+                image_url = f"[https://image.pollinations.ai/prompt/movie](https://image.pollinations.ai/prompt/movie) poster for {safe_title} minimalist 4k?width=400&height=600&nologo=true"
                 
-                print(f"✨ SUCCESS: Generated {len(results)} AI tiles.")
-                return results
-            else:
-                print(f"⚠️ PARSE ERROR: {content[:100]}...")
+                results.append({
+                    "id": f"ai-{uuid.uuid4()}",
+                    "title": item.get('title', 'Unknown'),
+                    "description": item.get('description', 'AI Generated.'),
+                    "rating": item.get('rating', 0),
+                    "type": item.get('type', 'MOVIE').upper(),
+                    "image": image_url,
+                    "score": 99
+                })
+            
+            print(f"✨ SUCCESS: Generated {len(results)} AI tiles.")
+            return results
         else:
-            print(f"❌ API ERROR: {resp.text}")
+            print(f"⚠️ PARSE ERROR: Could not find JSON in response: {content[:100]}...")
 
     except Exception as e:
         print(f"❌ CRASH: {e}")
@@ -186,13 +188,10 @@ def signup(data: AuthRequest, db: Session = Depends(get_db)):
 
 @app.post("/recommend")
 def recommend(req: UserRequest):
-    # 1. If user wants AI (Trinity)
     if req.model == 'api':
         results = get_llm_recommendations(req.text)
         if results: return results
-        # If AI fails, fall through to vector search
     
-    # 2. Standard Vector Search (Fallback or Internal Mode)
     vector = get_embedding(req.text)
     if not vector: return []
     hits = safe_vector_search(vector, limit=req.top_k)
@@ -206,19 +205,12 @@ def recommend(req: UserRequest):
 
 @app.post("/recommend/personalized")
 def personalized(req: PersonalizedRequest, user=Depends(get_current_user_db)):
-    # Same logic for now
     return recommend(UserRequest(text=req.text, top_k=req.top_k, model=req.model))
 
 @app.post("/similar")
 def similar(req: SimilarRequest):
     q_client = get_qdrant()
-    
-    # 🕵️‍♂️ DETECT GHOST ID (AI Generated)
-    if str(req.id).startswith("ai-"):
-        # We can't look up an AI ID in the database.
-        return [] 
-
-    # Normal Database ID
+    if str(req.id).startswith("ai-"): return [] 
     try:
         tgt = q_client.retrieve("freeme_collection", ids=[req.id], with_vectors=True)
         if not tgt: return []
@@ -236,10 +228,7 @@ def similar(req: SimilarRequest):
 
 @app.post("/wishlist/add/{mid}")
 def add_w(mid: str, u=Depends(get_current_user_db), db: Session = Depends(get_db)):
-    # AI IDs can't be saved permanently to Wishlist because they don't exist in DB
-    if mid.startswith("ai-"):
-        raise HTTPException(status_code=400, detail="Cannot save AI-generated dreams yet.")
-        
+    if mid.startswith("ai-"): raise HTTPException(status_code=400, detail="Cannot save AI items.")
     if not db.query(WishlistItem).filter_by(user_id=u.id, media_id=mid).first():
         db.add(WishlistItem(user_id=u.id, media_id=mid))
         db.commit()
