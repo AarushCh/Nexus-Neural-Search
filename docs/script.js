@@ -297,7 +297,12 @@ document.addEventListener("DOMContentLoaded", () => {
         filtered.forEach(item => {
             const card = document.createElement('div'); card.className = 'card';
             let imgUrl = `https://placehold.co/300x450/111/FFF?text=${encodeURIComponent(item.title)}`;
-            if (item.image && item.image.length > 5 && !item.image.includes("null")) imgUrl = `https://wsrv.nl/?url=${encodeURIComponent(item.image)}&w=400&output=webp`;
+            if (item.image && item.image.includes("pollinations")) {
+                imgUrl = item.image;
+            }
+            else if (item.image && item.image.length > 5 && !item.image.includes("null")) {
+                imgUrl = `https://wsrv.nl/?url=${encodeURIComponent(item.image)}&w=400&output=webp`;
+            }
             const isSaved = WISHLIST_IDS.has(item.id);
 
             let type = (item.type || "MOVIE").toUpperCase();
