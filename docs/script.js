@@ -53,7 +53,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 const dy = this.mouse.y - p.y;
                 const dist = Math.sqrt(dx * dx + dy * dy);
 
-                // Just draw the line, NO physics movement
                 if (dist < this.mouseDist) {
                     this.ctx.beginPath();
                     const opacity = 1 - (dist / this.mouseDist);
@@ -63,16 +62,15 @@ document.addEventListener("DOMContentLoaded", () => {
                     this.ctx.lineTo(p.x, p.y);
                     this.ctx.stroke();
                 }
-                // ------------------------------------
 
                 this.ctx.beginPath(); this.ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
 
                 if (isLight) {
-                    this.ctx.fillStyle = p.color; // Colorful in Light Mode
+                    this.ctx.fillStyle = p.color;
                     this.ctx.shadowBlur = 5;
                     this.ctx.shadowColor = p.color;
                 } else {
-                    this.ctx.fillStyle = '#ffffff'; // White in Dark Mode
+                    this.ctx.fillStyle = '#ffffff';
                     this.ctx.shadowBlur = 10;
                     this.ctx.shadowColor = '#ffffff';
                 }
@@ -152,14 +150,10 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     // --- AUTH LOGIC ---
-    // --- AUTH LOGIC ---
-    // We attach these directly to 'window' so the HTML can definitely see them.
     window.login = async () => {
-        console.log("Login button clicked..."); // DEBUG: Check console if this appears
-
         const btn = document.querySelector('#login-view .primary');
         const originalText = btn.innerText;
-        btn.innerText = "CONNECTING..."; // Visual feedback
+        btn.innerText = "CONNECTING...";
         btn.disabled = true;
 
         const u = document.getElementById("auth-username").value;
@@ -167,17 +161,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (!u || !p) {
             document.getElementById('auth-error').innerText = "MISSING CREDENTIALS";
-            btn.innerText = originalText;
-            btn.disabled = false;
+            btn.innerText = originalText; btn.disabled = false;
             return;
         }
 
         try {
-            // Use FormData for FastAPI OAuth2 compatibility
             const form = new FormData();
             form.append("username", u);
             form.append("password", p);
-
             const res = await fetch(`${API_URL}/login`, { method: "POST", body: form });
 
             if (res.ok) {
@@ -194,18 +185,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 throw new Error(err.detail || "Invalid Credentials");
             }
         } catch (e) {
-            console.error(e);
             document.getElementById('auth-error').innerText = "LOGIN FAILED: " + e.message;
         } finally {
-            // Always reset the button
-            btn.innerText = originalText;
-            btn.disabled = false;
+            btn.innerText = originalText; btn.disabled = false;
         }
     };
 
     window.signup = async () => {
-        console.log("Signup button clicked...");
-
         const btn = document.querySelector('#signup-view .primary');
         const originalText = btn.innerText;
         btn.innerText = "REGISTERING...";
@@ -218,8 +204,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (p !== c) {
             document.getElementById('auth-error').innerText = "PASSWORDS DO NOT MATCH";
-            btn.innerText = originalText;
-            btn.disabled = false;
+            btn.innerText = originalText; btn.disabled = false;
             return;
         }
 
@@ -240,8 +225,7 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (error) {
             document.getElementById('auth-error').innerText = "ERROR: " + error.message;
         } finally {
-            btn.innerText = originalText;
-            btn.disabled = false;
+            btn.innerText = originalText; btn.disabled = false;
         }
     };
 
@@ -268,9 +252,17 @@ document.addEventListener("DOMContentLoaded", () => {
         grid.innerHTML = `<h2 style="grid-column:1/-1;text-align:center;color:var(--neon-blue);animation:pulse 1s infinite;">NEURAL SCAN IN PROGRESS...</h2>`;
         try {
             const endpoint = AUTH_TOKEN ? "/recommend/personalized" : "/recommend";
-            const res = await fetch(`${API_URL}${endpoint}`, { method: "POST", headers: { "Content-Type": "application/json", ...(AUTH_TOKEN && { "Authorization": `Bearer ${AUTH_TOKEN}` }) }, body: JSON.stringify({ text: query, top_k: 12, model: CURRENT_MODEL }) });
-            const data = await res.json(); lastSearchData = data; renderResults(data);
-        } catch { grid.innerHTML = `<h3 style="text-align:center;grid-column:1/-1;color:red;">CONNECTION ERROR</h3>`; }
+            const res = await fetch(`${API_URL}${endpoint}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", ...(AUTH_TOKEN && { "Authorization": `Bearer ${AUTH_TOKEN}` }) },
+                body: JSON.stringify({ text: query, top_k: 12, model: CURRENT_MODEL })
+            });
+            const data = await res.json();
+            lastSearchData = data;
+            renderResults(data);
+        } catch {
+            grid.innerHTML = `<h3 style="text-align:center;grid-column:1/-1;color:red;">CONNECTION ERROR</h3>`;
+        }
     }
 
     function renderResults(data, isSimilarView = false) {
@@ -287,7 +279,6 @@ document.addEventListener("DOMContentLoaded", () => {
             });
         }
 
-        // SORTING: Uses the FULL original value
         if (CURRENT_SORT === 'RATING') {
             filtered.sort((a, b) => (parseFloat(b.rating) || 0) - (parseFloat(a.rating) || 0));
         }
@@ -299,8 +290,7 @@ document.addEventListener("DOMContentLoaded", () => {
             let imgUrl = `https://placehold.co/300x450/111/FFF?text=${encodeURIComponent(item.title)}`;
             if (item.image && item.image.includes("pollinations")) {
                 imgUrl = item.image;
-            }
-            else if (item.image && item.image.length > 5 && !item.image.includes("null")) {
+            } else if (item.image && item.image.length > 5 && !item.image.includes("null")) {
                 imgUrl = `https://wsrv.nl/?url=${encodeURIComponent(item.image)}&w=400&output=webp`;
             }
             const isSaved = WISHLIST_IDS.has(item.id);
@@ -311,12 +301,12 @@ document.addEventListener("DOMContentLoaded", () => {
             if (type.includes("ANIME")) typeClass = "anime";
             if (type.includes("DOC")) typeClass = "doc";
 
-            // --- FIXED RATING FORMATTING (X.Y) ---
             let ratingVal = parseFloat(item.rating);
             let rating = !isNaN(ratingVal) ? `★ ${ratingVal.toFixed(1)}` : "";
-            // -------------------------------------
 
-            const exploreBtn = isSimilarView ? '' : `<button class="similar-btn" onclick="window.findSimilar('${item.id}')">EXPLORE SIMILAR</button>`;
+            // ✅ UPDATE 1: Pass Title into findSimilar (escaped safely)
+            const safeTitle = item.title.replace(/['"]/g, "&quot;");
+            const exploreBtn = isSimilarView ? '' : `<button class="similar-btn" onclick="window.findSimilar('${item.id}', '${safeTitle}')">EXPLORE SIMILAR</button>`;
 
             card.innerHTML = `
                 <div class="card-media-wrapper"><img src="${imgUrl}" loading="lazy" onload="this.classList.add('loaded')"><div class="match-bar-track"><span class="match-label-base label-cyan">${item.score || 85}% MATCH</span></div></div>
@@ -372,7 +362,27 @@ document.addEventListener("DOMContentLoaded", () => {
         if (action === 'add') { WISHLIST_IDS.add(id); btn.style.color = '#ff0055'; btn.innerText = '♥'; } else { WISHLIST_IDS.delete(id); btn.style.color = '#888'; btn.innerText = '♡'; }
     };
 
-    window.findSimilar = async (id) => {
+    // ✅ UPDATE 2: SMART SIMILAR FUNCTION (Integrated)
+    window.findSimilar = async (id, title) => {
+        console.log(`🔎 Exploring similar to: ${title} (ID: ${id})`);
+
+        // 1. If it is an AI Generated Tile (Ghost ID)
+        if (String(id).startsWith('ai-')) {
+            // Switch input to "Movies similar to X"
+            document.getElementById('search-input').value = `Movies similar to ${title}`;
+
+            // Force "God Mode" (API) for this search
+            CURRENT_MODEL = 'api';
+            // Update UI to reflect change
+            const modelLabel = document.getElementById('current-model-name');
+            if (modelLabel) modelLabel.innerText = "NVIDIA NEMOTRON";
+
+            // Run the search
+            performSearch();
+            return;
+        }
+
+        // 2. Normal Database Tile Logic
         const grid = document.getElementById('results-grid');
         const fb = document.getElementById('filter-bar'); if (fb) fb.style.display = 'none';
         grid.innerHTML = `<h2 style="grid-column:1/-1;text-align:center;">VECTOR TRIANGULATION...</h2>`;

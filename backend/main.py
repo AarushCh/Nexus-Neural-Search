@@ -145,7 +145,7 @@ def get_llm_recommendations(query):
                 safe_title = re.sub(r'[^a-zA-Z0-9 ]', '', item['title'])
                 
                 # ✅ CLEAN IMAGE URL
-                image_url = f"[https://image.pollinations.ai/prompt/movie](https://image.pollinations.ai/prompt/movie) poster for {safe_title} minimalist 4k?width=400&height=600&nologo=true"
+                image_url = f"https://image.pollinations.ai/prompt/official movie poster for {safe_title}, cinematic lighting, 8k, highly detailed, photorealistic, dramatic composition?width=600&height=900&nologo=true"
                 
                 results.append({
                     "id": f"ai-{uuid.uuid4()}",
