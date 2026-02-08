@@ -107,63 +107,80 @@ def safe_vector_search(vector, limit=50):
         return []
 
 def get_llm_recommendations(query):
-    """
-    1. Ask Trinity for 10 ideas.
-    2. Find the ones we actually have in DB.
-    3. If we have < 12 results, fill the rest with standard Vector Search.
-    """
     final_results = []
     seen_ids = set()
 
+    print(f"🧠 TRINITY: Thinking about '{query}'...") # DEBUG LOG
+
     # --- STEP 1: TRINITY THINKING ---
     try:
-        if OPENROUTER_API_KEY:
+        if not OPENROUTER_API_KEY:
+            print("❌ TRINITY ERROR: No API Key found in Environment!")
+        else:
+            # We use a simple prompt to ensure JSON format
             resp = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "HTTP-Referer": "http://nexus-search.com"},
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}", 
+                    "HTTP-Referer": "http://nexus-search.com",
+                    "Content-Type": "application/json"
+                },
                 data=json.dumps({
                     "model": OPENROUTER_MODEL,
-                    "messages": [{"role": "user", "content": f"Recommend 12 movies strictly matching '{query}'. Return ONLY JSON list of strings."}]
-                }), timeout=15
+                    "messages": [
+                        {"role": "system", "content": "You are a movie expert. Return ONLY a raw JSON list of 10 movie titles. No text, no markdown. Example: [\"Matrix\", \"Inception\"]"},
+                        {"role": "user", "content": f"Recommend 10 movies strictly matching '{query}'."}
+                    ]
+                }), 
+                timeout=10
             )
+            
             if resp.status_code == 200:
                 content = resp.json()['choices'][0]['message']['content']
-                match = re.search(r'\[.*\]', content, re.DOTALL)
+                print(f"🤖 TRINITY SAID: {content}") # DEBUG LOG
+
+                # Clean up the response (sometimes AI adds ```json ... ```)
+                clean_content = re.sub(r'```json|```', '', content).strip()
+                match = re.search(r'\[.*\]', clean_content, re.DOTALL)
+                
                 if match:
                     titles = json.loads(match.group())
-                    # Check if we have these movies
+                    print(f"🎯 PARSED TITLES: {titles}") # DEBUG LOG
+                    
                     for t in titles:
+                        # Search for the exact movie in our DB
                         hits = keyword_search(t, limit=1)
                         if hits:
                             h = hits[0]
                             if h.id not in seen_ids:
                                 item = h.payload
                                 item["id"] = h.id
-                                item["score"] = 99 # Trinity picks get high score
+                                item["score"] = 99 # 🟢 FORCE 99% FOR TRINITY
                                 final_results.append(item)
                                 seen_ids.add(h.id)
+                else:
+                    print("⚠️ TRINITY ERROR: Could not find JSON list in response.")
+            else:
+                print(f"❌ TRINITY API ERROR: {resp.status_code} - {resp.text}")
+
     except Exception as e:
-        print(f"LLM Failed: {e}")
+        print(f"❌ TRINITY CRASH: {e}")
 
     # --- STEP 2: THE BACKFILL (Ensure 12 Tiles) ---
     slots_needed = 12 - len(final_results)
-    
     if slots_needed > 0:
-        print(f"⚠️ Trinity only found {len(final_results)}. Backfilling {slots_needed} from Vector DB.")
+        print(f"⚠️ Trinity found {len(final_results)}. Backfilling {slots_needed} from Vector DB.")
         vector = get_embedding(query)
         if vector:
-            # Fetch extra to account for duplicates
-            hits = safe_vector_search(vector, limit=slots_needed + 10)
+            hits = safe_vector_search(vector, limit=slots_needed + 5)
             for h in hits:
                 if h.id not in seen_ids:
                     item = h.payload
                     item["id"] = h.id
-                    item["score"] = int(h.score * 100) if h.score else 85
+                    item["score"] = int(h.score * 100) if h.score else 65
                     final_results.append(item)
                     seen_ids.add(h.id)
-                    
-                    if len(final_results) >= 12:
-                        break
+                    if len(final_results) >= 12: break
 
     return final_results
 

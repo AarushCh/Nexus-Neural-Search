@@ -311,7 +311,7 @@ document.addEventListener("DOMContentLoaded", () => {
             let rating = !isNaN(ratingVal) ? `★ ${ratingVal.toFixed(1)}` : "";
             // -------------------------------------
 
-            const exploreBtn = isSimilarView ? '' : `<button class="similar-btn" onclick="window.findSimilar(${item.id})">EXPLORE SIMILAR</button>`;
+            const exploreBtn = isSimilarView ? '' : `<button class="similar-btn" onclick="window.findSimilar('${item.id}')">EXPLORE SIMILAR</button>`;
 
             card.innerHTML = `
                 <div class="card-media-wrapper"><img src="${imgUrl}" loading="lazy" onload="this.classList.add('loaded')"><div class="match-bar-track"><span class="match-label-base label-cyan">${item.score || 85}% MATCH</span></div></div>
@@ -319,7 +319,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     <div class="badge-row">
                         <span class="type-badge type-${typeClass}">${type}</span>
                         ${rating ? `<span class="rating-badge">${rating}</span>` : ''}
-                        <button onclick="window.toggleWishlist(this, ${item.id})" class="wishlist-btn" style="color:${isSaved ? '#ff0055' : '#888'};">${isSaved ? '♥' : '♡'}</button>
+                        <button onclick="window.toggleWishlist(this, '${item.id}')" class="wishlist-btn" style="color:${isSaved ? '#ff0055' : '#888'};">${isSaved ? '♥' : '♡'}</button>
                     </div>
                     <h3>${item.title}</h3><p>${item.description || "No data."}</p>
                     ${exploreBtn}
