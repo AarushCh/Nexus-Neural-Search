@@ -81,7 +81,7 @@ def safe_vector_search(vector, limit=50):
         return q_client.query_points(collection_name="freeme_collection", query=vector, limit=limit).points
     except: return []
 
-# --- 🧠 GOD MODE GENERATOR (NVIDIA REASONING VERSION) ---
+# --- 🧠 GOD MODE GENERATOR (REAL POSTERS VERSION) ---
 def get_llm_recommendations(query):
     print(f"🧠 NVIDIA NEMOTRON: Reasoning about '{query}'...") 
 
@@ -96,7 +96,7 @@ def get_llm_recommendations(query):
             api_key=OPENROUTER_API_KEY,
         )
 
-        # 2. Prepare the Prompt
+        # 2. Prompt (Simplified: Don't ask for images, just data)
         prompt = f"""
         You are a movie database API. 
         User Request: "{query}"
@@ -109,30 +109,24 @@ def get_llm_recommendations(query):
         - "rating": (Float) IMDB style rating (e.g. 8.5)
         - "type": (String) One of: MOVIE, TV, ANIME, DOCUMENTARY
         
-        Do NOT include markdown formatting (like ```json). Just the raw JSON array.
+        Do NOT include markdown formatting. Just the raw JSON.
         """
         
-        print("   ➡️ Sending request to OpenRouter (NVIDIA Nemotron)...")
+        print("   ➡️ Sending request to OpenRouter...")
 
-        # 3. Call API with Reasoning Enabled
+        # 3. Call API
         completion = client.chat.completions.create(
             model=OPENROUTER_MODEL,
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            extra_headers={
-                "HTTP-Referer": "[http://nexus-search.com](http://nexus-search.com)",
-            },
-            extra_body={
-                "reasoning": {"enabled": True}  # ✅ ENABLED REASONING
-            }
+            messages=[{"role": "user", "content": prompt}],
+            extra_headers={"HTTP-Referer": "http://nexus-search.com"},
+            extra_body={"reasoning": {"enabled": True}}
         )
 
         # 4. Extract Content
         content = completion.choices[0].message.content
         print("   ⬅️ Received Response")
 
-        # 5. Clean & Parse JSON
+        # 5. Clean & Parse
         clean_content = re.sub(r'```json|```', '', content).strip()
         match = re.search(r'\[.*\]', clean_content, re.DOTALL)
         
@@ -141,11 +135,10 @@ def get_llm_recommendations(query):
             results = []
             
             for item in data:
-                # ✨ MAGIC: Create a working image link
-                safe_title = re.sub(r'[^a-zA-Z0-9 ]', '', item['title'])
-                
-                # ✅ CLEAN IMAGE URL
-                image_url = f"https://image.pollinations.ai/prompt/official movie poster for {safe_title}, cinematic lighting, 8k, highly detailed, photorealistic, dramatic composition?width=600&height=900&nologo=true"
+                # ✨ TRICK: Use a Search Thumbnail Proxy to find the REAL poster
+                # This searches Bing Images for "{Title} Movie Poster" and returns the first result
+                safe_title = item['title'].replace(" ", "%20")
+                image_url = f"https://tse4.mm.bing.net/th?q={safe_title}%20movie%20poster&w=400&h=600&c=7&rs=1"
                 
                 results.append({
                     "id": f"ai-{uuid.uuid4()}",
@@ -153,14 +146,14 @@ def get_llm_recommendations(query):
                     "description": item.get('description', 'AI Generated.'),
                     "rating": item.get('rating', 0),
                     "type": item.get('type', 'MOVIE').upper(),
-                    "image": image_url,
+                    "image": image_url, # ✅ NOW A WORKING REAL LINK
                     "score": 99
                 })
             
-            print(f"✨ SUCCESS: Generated {len(results)} AI tiles.")
+            print(f"✨ SUCCESS: Generated {len(results)} tiles with Real Posters.")
             return results
         else:
-            print(f"⚠️ PARSE ERROR: Could not find JSON in response: {content[:100]}...")
+            print(f"⚠️ PARSE ERROR: {content[:100]}...")
 
     except Exception as e:
         print(f"❌ CRASH: {e}")
