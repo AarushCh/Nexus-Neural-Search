@@ -14,7 +14,7 @@ import time
 import uuid
 from dotenv import load_dotenv
 from qdrant_client import models
-from openai import OpenAI  # <--- NEW IMPORT
+from openai import OpenAI  # <--- NEW CLIENT
 
 # --- CONFIGURATION ---
 load_dotenv()
@@ -24,10 +24,11 @@ QDRANT_URL = os.environ.get("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
-# Model: BAAI/bge-small-en-v1.5
+# Model: BAAI/bge-small-en-v1.5 (Embeddings)
 HF_API_URL = "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5"
-# Default to Mistral, but you can set this to 'nvidia/nemotron-nano-12b-v2-vl:free' in Render Env Vars
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct:free")
+
+# ✅ NEW MODEL: NVIDIA Nemotron
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free")
 
 app = FastAPI(title="Nexus God Mode Engine")
 
@@ -80,16 +81,16 @@ def safe_vector_search(vector, limit=50):
         return q_client.query_points(collection_name="freeme_collection", query=vector, limit=limit).points
     except: return []
 
-# --- 🧠 GOD MODE GENERATOR (OPENAI CLIENT VERSION) ---
+# --- 🧠 GOD MODE GENERATOR (NVIDIA REASONING VERSION) ---
 def get_llm_recommendations(query):
-    print(f"🧠 TRINITY GOD MODE: Generating fresh data for '{query}'...") 
+    print(f"🧠 NVIDIA NEMOTRON: Reasoning about '{query}'...") 
 
     if not OPENROUTER_API_KEY:
         print("❌ ERROR: No API Key.")
         return []
 
     try:
-        # 1. Initialize OpenAI Client for OpenRouter
+        # 1. Initialize OpenAI Client
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=OPENROUTER_API_KEY,
@@ -111,9 +112,9 @@ def get_llm_recommendations(query):
         Do NOT include markdown formatting (like ```json). Just the raw JSON array.
         """
         
-        print("   ➡️ Sending request to OpenRouter (via OpenAI Client)...")
+        print("   ➡️ Sending request to OpenRouter (NVIDIA Nemotron)...")
 
-        # 3. Call the API
+        # 3. Call API with Reasoning Enabled
         completion = client.chat.completions.create(
             model=OPENROUTER_MODEL,
             messages=[
@@ -121,6 +122,9 @@ def get_llm_recommendations(query):
             ],
             extra_headers={
                 "HTTP-Referer": "[http://nexus-search.com](http://nexus-search.com)",
+            },
+            extra_body={
+                "reasoning": {"enabled": True}  # ✅ ENABLED REASONING
             }
         )
 
@@ -171,7 +175,7 @@ class AuthRequest(BaseModel): username: str; email: str; password: str
 class SimilarRequest(BaseModel): id: str
 
 @app.get("/")
-def health_check(): return {"status": "online", "mode": "GOD_MODE"}
+def health_check(): return {"status": "online", "mode": "GOD_MODE_NVIDIA"}
 
 @app.post("/login")
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -188,10 +192,13 @@ def signup(data: AuthRequest, db: Session = Depends(get_db)):
 
 @app.post("/recommend")
 def recommend(req: UserRequest):
+    # 1. If user wants AI (God Mode)
     if req.model == 'api':
         results = get_llm_recommendations(req.text)
         if results: return results
+        # If AI fails, fall through to vector search
     
+    # 2. Standard Vector Search (Fallback)
     vector = get_embedding(req.text)
     if not vector: return []
     hits = safe_vector_search(vector, limit=req.top_k)
