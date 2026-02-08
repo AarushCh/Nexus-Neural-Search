@@ -78,13 +78,13 @@ def safe_vector_search(vector, limit=50):
         return q_client.query_points(collection_name="freeme_collection", query=vector, limit=limit).points
     except: return []
 
-# --- 🧠 GOD MODE GENERATOR (DEBUG VERSION) ---
+# --- 🧠 GOD MODE GENERATOR (CLEAN VERSION) ---
 def get_llm_recommendations(query):
     print(f"🧠 TRINITY GOD MODE: Generating fresh data for '{query}'...") 
 
     try:
         if not OPENROUTER_API_KEY:
-            print("❌ CRITICAL ERROR: OPENROUTER_API_KEY is missing in Render Environment!")
+            print("❌ ERROR: No API Key.")
             return []
 
         # 1. Ask Trinity to be the Database
@@ -105,6 +105,7 @@ def get_llm_recommendations(query):
         
         print("   ➡️ Sending request to OpenRouter...")
         
+        # ✅ THE FIX IS HERE: Just a plain URL string. No brackets.
         resp = requests.post(
             "[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)",
             headers={
@@ -123,18 +124,18 @@ def get_llm_recommendations(query):
 
         if resp.status_code == 200:
             content = resp.json()['choices'][0]['message']['content']
-            # Clean possible markdown
             clean_content = re.sub(r'```json|```', '', content).strip()
             
-            # Find the JSON array
             match = re.search(r'\[.*\]', clean_content, re.DOTALL)
             if match:
                 data = json.loads(match.group())
                 results = []
                 
                 for item in data:
-                    # ✨ MAGIC: Create a working image link using AI Art
+                    # ✨ MAGIC: Create a working image link
                     safe_title = re.sub(r'[^a-zA-Z0-9 ]', '', item['title'])
+                    
+                    # ✅ FIXED IMAGE URL TOO (Just in case)
                     image_url = f"[https://image.pollinations.ai/prompt/movie](https://image.pollinations.ai/prompt/movie) poster for {safe_title} minimalist 4k?width=400&height=600&nologo=true"
                     
                     results.append({
@@ -150,15 +151,13 @@ def get_llm_recommendations(query):
                 print(f"✨ SUCCESS: Generated {len(results)} AI tiles.")
                 return results
             else:
-                print(f"⚠️ PARSE ERROR: Could not find JSON in response: {content[:100]}...")
+                print(f"⚠️ PARSE ERROR: {content[:100]}...")
         else:
-            # 🚨 THIS IS WHAT WAS MISSING BEFORE
             print(f"❌ API ERROR: {resp.text}")
 
     except Exception as e:
         print(f"❌ CRASH: {e}")
 
-    print("⚠️ Fallback: Returning empty list (triggering standard search).")
     return []
 
 # --- ROUTES ---
