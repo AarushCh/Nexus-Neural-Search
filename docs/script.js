@@ -152,28 +152,97 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     // --- AUTH LOGIC ---
+    // --- AUTH LOGIC ---
+    // We attach these directly to 'window' so the HTML can definitely see them.
     window.login = async () => {
+        console.log("Login button clicked..."); // DEBUG: Check console if this appears
+
+        const btn = document.querySelector('#login-view .primary');
+        const originalText = btn.innerText;
+        btn.innerText = "CONNECTING..."; // Visual feedback
+        btn.disabled = true;
+
         const u = document.getElementById("auth-username").value;
         const p = document.getElementById("auth-password").value;
-        const form = new URLSearchParams(); form.append("username", u); form.append("password", p);
-        const res = await fetch(`${API_URL}/login`, { method: "POST", body: form });
-        if (res.ok) {
-            const data = await res.json();
-            AUTH_TOKEN = data.access_token; CURRENT_USER = u;
-            localStorage.setItem("freeme_token", AUTH_TOKEN); localStorage.setItem("freeme_user", u);
-            window.closeAuth(); bootSystem();
-        } else { document.getElementById('auth-error').innerText = "Invalid Credentials"; }
+
+        if (!u || !p) {
+            document.getElementById('auth-error').innerText = "MISSING CREDENTIALS";
+            btn.innerText = originalText;
+            btn.disabled = false;
+            return;
+        }
+
+        try {
+            // Use FormData for FastAPI OAuth2 compatibility
+            const form = new FormData();
+            form.append("username", u);
+            form.append("password", p);
+
+            const res = await fetch(`${API_URL}/login`, { method: "POST", body: form });
+
+            if (res.ok) {
+                const data = await res.json();
+                AUTH_TOKEN = data.access_token;
+                CURRENT_USER = u;
+                localStorage.setItem("freeme_token", AUTH_TOKEN);
+                localStorage.setItem("freeme_user", u);
+                window.closeAuth();
+                bootSystem();
+                alert("LOGIN SUCCESSFUL");
+            } else {
+                const err = await res.json();
+                throw new Error(err.detail || "Invalid Credentials");
+            }
+        } catch (e) {
+            console.error(e);
+            document.getElementById('auth-error').innerText = "LOGIN FAILED: " + e.message;
+        } finally {
+            // Always reset the button
+            btn.innerText = originalText;
+            btn.disabled = false;
+        }
     };
 
     window.signup = async () => {
+        console.log("Signup button clicked...");
+
+        const btn = document.querySelector('#signup-view .primary');
+        const originalText = btn.innerText;
+        btn.innerText = "REGISTERING...";
+        btn.disabled = true;
+
         const u = document.getElementById("su-username").value;
         const e = document.getElementById("su-email").value;
         const p = document.getElementById("su-password").value;
         const c = document.getElementById("su-confirm").value;
-        if (p !== c) { document.getElementById('auth-error').innerText = "Passwords do not match"; return; }
-        const res = await fetch(`${API_URL}/signup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: u, email: e, password: p }) });
-        if (res.ok) { window.switchToLogin(); alert("Account Created! Please Login."); }
-        else { const err = await res.json(); document.getElementById('auth-error').innerText = err.detail || "Signup Failed"; }
+
+        if (p !== c) {
+            document.getElementById('auth-error').innerText = "PASSWORDS DO NOT MATCH";
+            btn.innerText = originalText;
+            btn.disabled = false;
+            return;
+        }
+
+        try {
+            const res = await fetch(`${API_URL}/signup`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ username: u, email: e, password: p })
+            });
+
+            if (res.ok) {
+                window.switchToLogin();
+                alert("ACCOUNT CREATED! PLEASE LOGIN.");
+            } else {
+                const err = await res.json();
+                document.getElementById('auth-error').innerText = err.detail || "Signup Failed";
+            }
+        } catch (error) {
+            document.getElementById('auth-error').innerText = "ERROR: " + error.message;
+        } finally {
+            btn.innerText = originalText;
+            btn.disabled = false;
+        }
     };
 
     window.logout = () => {

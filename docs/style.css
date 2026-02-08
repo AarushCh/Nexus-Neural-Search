@@ -1085,3 +1085,83 @@ input:checked+.slider .moon {
         transform: translateY(0);
     }
 }
+
+/* --- CUSTOM SCROLLBARS (WEBKIT) --- */
+/* The Track */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+/* The Background */
+::-webkit-scrollbar-track {
+    background: var(--bg-body);
+    border-left: 1px solid var(--border-color);
+}
+
+/* The Moving Handle */
+::-webkit-scrollbar-thumb {
+    background: #333;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+}
+
+/* Handle on Hover */
+::-webkit-scrollbar-thumb:hover {
+    background: var(--neon-blue);
+    border-color: #fff;
+    box-shadow: 0 0 10px var(--neon-blue);
+}
+
+/* Light Mode Scrollbar Overrides */
+html.light-mode ::-webkit-scrollbar-track {
+    background: #f0f0f0;
+}
+
+html.light-mode ::-webkit-scrollbar-thumb {
+    background: #ccc;
+    border-color: #bbb;
+}
+
+html.light-mode ::-webkit-scrollbar-thumb:hover {
+    background: var(--neon-blue);
+}
+
+/* --- MOBILE RESPONSIVENESS --- */
+@media (max-width: 768px) {
+    .cyber-glitch {
+        font-size: 50px;
+        /* Smaller title on mobile */
+        letter-spacing: 4px;
+    }
+
+    .sidebar {
+        width: 100%;
+        /* Full width sidebar on mobile */
+        left: -100%;
+    }
+
+    .search-container {
+        padding: 0 20px;
+    }
+
+    .input-wrapper input#search-input {
+        font-size: 16px;
+        /* Prevents iOS zooming on focus */
+        padding-right: 90px;
+    }
+
+    .icon-btn {
+        width: 40px;
+        height: 40px;
+        font-size: 18px;
+    }
+
+    .dice-btn {
+        right: 50px;
+    }
+
+    .search-btn {
+        right: 5px;
+    }
+}
