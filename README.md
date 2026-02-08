@@ -1,7 +1,7 @@
 # 🦅 FreeMe Neural Search (Nexus Engine)
 ## 🔗 Live Website
 
-➡️ [https://aarushch.github.io/nexus-neural-search/](https://aarushch.github.io/nexus-neural-search/) 
+➡️ [https://aarushch.github.io/Nexus-Neural-Search/](https://aarushch.github.io/Nexus-Neural-Search/) 
 
 
 ![Project Banner](https://placehold.co/1200x400/050505/00f3ff?text=NEXUS+INTELLIGENCE+ENGINE)
@@ -87,3 +87,4 @@ freeme-neural-search/
 git clone [https://github.com/YOUR_USERNAME/nexus-neural-search.git](https://github.com/YOUR_USERNAME/nexus-neural-search.git)
 
 cd nexus-neural-search
+
