@@ -82,12 +82,23 @@ document.addEventListener("DOMContentLoaded", () => {
     let AUTH_TOKEN = localStorage.getItem("freeme_token");
     let CURRENT_USER = localStorage.getItem("freeme_user");
     let WISHLIST_IDS = new Set();
-    let CURRENT_MODEL = 'internal';
+    let CURRENT_MODEL = 'api';
     let CURRENT_FILTER = 'ALL';
     let CURRENT_SORT = 'RELEVANCE';
     let lastSearchData = [];
     let SEARCH_HISTORY = [];
     try { SEARCH_HISTORY = JSON.parse(localStorage.getItem('freeme_history')) || []; } catch (e) { }
+
+    setTimeout(() => {
+        const modelLabel = document.getElementById('current-model-name');
+        if (modelLabel) modelLabel.innerText = "NVIDIA NEMOTRON";
+
+        // Update the menu active state
+        document.querySelectorAll('.model-option').forEach(opt => {
+            opt.classList.remove('active');
+            if (opt.innerText.includes("NVIDIA")) opt.classList.add('active');
+        });
+    }, 100);
 
     // --- NAVIGATION HELPERS ---
     window.returnToMain = () => {
