@@ -82,18 +82,20 @@ document.addEventListener("DOMContentLoaded", () => {
     let AUTH_TOKEN = localStorage.getItem("freeme_token");
     let CURRENT_USER = localStorage.getItem("freeme_user");
     let WISHLIST_IDS = new Set();
+
+    // ✅ 1. SET DEFAULT TO API (NVIDIA)
     let CURRENT_MODEL = 'api';
+
     let CURRENT_FILTER = 'ALL';
     let CURRENT_SORT = 'RELEVANCE';
     let lastSearchData = [];
     let SEARCH_HISTORY = [];
     try { SEARCH_HISTORY = JSON.parse(localStorage.getItem('freeme_history')) || []; } catch (e) { }
 
+    // ✅ 2. FORCE UI TO SHOW NVIDIA NAME ON LOAD
     setTimeout(() => {
         const modelLabel = document.getElementById('current-model-name');
         if (modelLabel) modelLabel.innerText = "NVIDIA NEMOTRON";
-
-        // Update the menu active state
         document.querySelectorAll('.model-option').forEach(opt => {
             opt.classList.remove('active');
             if (opt.innerText.includes("NVIDIA")) opt.classList.add('active');
@@ -192,8 +194,23 @@ document.addEventListener("DOMContentLoaded", () => {
                 headers: { "Content-Type": "application/json", ...(AUTH_TOKEN && { "Authorization": `Bearer ${AUTH_TOKEN}` }) },
                 body: JSON.stringify({ text: query, top_k: 12, model: CURRENT_MODEL })
             });
+
+            // ✅ FIX: Detect Invalid Token (401) and Auto-Logout
+            if (res.status === 401) {
+                localStorage.removeItem('freeme_token');
+                localStorage.removeItem('freeme_user');
+                alert("SESSION EXPIRED: Please Login Again.");
+                location.reload();
+                return;
+            }
+
+            if (!res.ok) throw new Error("API Error");
+
             const data = await res.json(); lastSearchData = data; renderResults(data);
-        } catch { grid.innerHTML = `<h3 style="text-align:center;grid-column:1/-1;color:red;">CONNECTION ERROR</h3>`; }
+        } catch (e) {
+            console.error(e);
+            grid.innerHTML = `<h3 style="text-align:center;grid-column:1/-1;color:red;">CONNECTION ERROR</h3>`;
+        }
     }
 
     function renderResults(data, isSimilarView = false) {
@@ -214,10 +231,10 @@ document.addEventListener("DOMContentLoaded", () => {
         filtered.forEach(item => {
             const card = document.createElement('div'); card.className = 'card';
 
-            // ✅ IMAGE LOGIC FIX: Prioritize direct Bing/Pollinations links
+            // ✅ IMAGE LOGIC FIX
             let imgUrl = `https://placehold.co/300x450/111/FFF?text=${encodeURIComponent(item.title)}`;
             if (item.image && (item.image.includes("pollinations") || item.image.includes("bing.net"))) {
-                imgUrl = item.image; // Use Direct Link
+                imgUrl = item.image;
             } else if (item.image && item.image.length > 5 && !item.image.includes("null")) {
                 imgUrl = `https://wsrv.nl/?url=${encodeURIComponent(item.image)}&w=400&output=webp`;
             }
@@ -347,6 +364,15 @@ document.addEventListener("DOMContentLoaded", () => {
             document.getElementById('nav-auth').innerText = "LOGOUT"; document.getElementById('nav-auth').onclick = window.logout;
             document.getElementById('hud-user').innerText = CURRENT_USER;
             const res = await fetch(`${API_URL}/wishlist`, { headers: { "Authorization": `Bearer ${AUTH_TOKEN}` } });
+
+            // ✅ FIX: Check Token on Boot
+            if (res.status === 401) {
+                localStorage.removeItem('freeme_token');
+                localStorage.removeItem('freeme_user');
+                location.reload();
+                return;
+            }
+
             if (res.ok) { const data = await res.json(); WISHLIST_IDS = new Set(data.map(i => i.id)); }
         }
         try { await fetch(`${API_URL}/docs`); document.getElementById('status-indicator').style.background = "#00ff9d"; document.getElementById('status-text').innerText = "ONLINE"; } catch { }
