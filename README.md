@@ -77,7 +77,7 @@ freeme-neural-search/
 ├── requirements.txt         # Python Dependencies
 ├── .env                     # API Keys & Secrets (GitIgnored)
 └── README.md                # Documentation
-
+```
 ---
 
 ## 🚀 Installation & Setup
@@ -87,4 +87,4 @@ freeme-neural-search/
 git clone [https://github.com/YOUR_USERNAME/nexus-neural-search.git](https://github.com/YOUR_USERNAME/nexus-neural-search.git)
 
 cd nexus-neural-search
-
+```
