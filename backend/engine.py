@@ -175,7 +175,24 @@ def _rerank(query: str, hits: list[dict]) -> list[dict]:
     return hits
 
 
-def _title_lookup(query: str, limit: int = 8) -> list[dict]:
+def build_filter(category=None, min_rating=None, year_min=None, year_max=None):
+    """Assemble a Qdrant payload filter for server-side faceting (needs build_indexes.py)."""
+    from qdrant_client import models
+
+    must = []
+    if category:
+        must.append(models.FieldCondition(key="category", match=models.MatchValue(value=str(category).upper())))
+    if min_rating:
+        must.append(models.FieldCondition(key="rating_f", range=models.Range(gte=float(min_rating))))
+    if year_min or year_max:
+        must.append(models.FieldCondition(key="year_i", range=models.Range(
+            gte=int(year_min) if year_min else None,
+            lte=int(year_max) if year_max else None,
+        )))
+    return models.Filter(must=must) if must else None
+
+
+def _title_lookup(query: str, limit: int = 8, qfilter=None) -> list[dict]:
     """
     Whole-DB exact/prefix title matches via the full-text `title` index.
     This is what guarantees "correct name matches": if you search a real title,
@@ -187,12 +204,13 @@ def _title_lookup(query: str, limit: int = 8) -> list[dict]:
     nq = _normalize(query)
     if not nq:
         return []
+    must = [models.FieldCondition(key="title", match=models.MatchText(text=query))]
+    if qfilter is not None and getattr(qfilter, "must", None):
+        must += list(qfilter.must)
     try:
         points, _ = get_qdrant().scroll(
             collection_name=COLLECTION_NAME,
-            scroll_filter=models.Filter(
-                must=[models.FieldCondition(key="title", match=models.MatchText(text=query))]
-            ),
+            scroll_filter=models.Filter(must=must),
             limit=64,
             with_payload=True,
         )
@@ -220,9 +238,10 @@ def _score_for_ui(rank: int, total: int) -> int:
     return int(99 - (rank / max(total - 1, 1)) * 39)
 
 
-def hybrid_search(text: str, top_k: int = 12, prefetch: int = 60) -> list[dict]:
+def hybrid_search(text: str, top_k: int = 12, prefetch: int = 60, qfilter=None) -> list[dict]:
     """
     Dense + BM25 retrieval fused with RRF, then cross-encoder reranked.
+    Optional `qfilter` (from build_filter) restricts by category/rating/year.
     Returns frontend-ready card dicts.
     """
     from qdrant_client import models
@@ -230,11 +249,11 @@ def hybrid_search(text: str, top_k: int = 12, prefetch: int = 60) -> list[dict]:
     client = get_qdrant()
     dense = embed_query(text)
 
-    prefetches = [models.Prefetch(query=dense, using=DENSE_VECTOR, limit=prefetch)]
+    prefetches = [models.Prefetch(query=dense, using=DENSE_VECTOR, limit=prefetch, filter=qfilter)]
     if ENABLE_SPARSE:
         try:
             prefetches.append(
-                models.Prefetch(query=sparse_query(text), using=SPARSE_VECTOR, limit=prefetch)
+                models.Prefetch(query=sparse_query(text), using=SPARSE_VECTOR, limit=prefetch, filter=qfilter)
             )
         except Exception as e:  # noqa: BLE001 - sparse is best-effort
             print(f"⚠️  Sparse query failed, dense-only: {e}")
@@ -253,6 +272,7 @@ def hybrid_search(text: str, top_k: int = 12, prefetch: int = 60) -> list[dict]:
                 collection_name=COLLECTION_NAME,
                 query=dense,
                 using=DENSE_VECTOR,
+                query_filter=qfilter,
                 limit=prefetch,
                 with_payload=True,
             )
@@ -264,7 +284,7 @@ def hybrid_search(text: str, top_k: int = 12, prefetch: int = 60) -> list[dict]:
     ranked = _rerank(text, hits)
 
     # Pin whole-DB exact/prefix title matches ahead of the semantic ranking.
-    pinned = _title_lookup(text, limit=top_k)
+    pinned = _title_lookup(text, limit=top_k, qfilter=qfilter)
 
     final, seen = [], set()
     for card in pinned + ranked:
@@ -409,8 +429,10 @@ def ground_with_llm(query: str, hits: list[dict], top_k: int = 12) -> list[dict]
 
     import json
 
+    # Include a recognizability signal (vote count) so the model can prefer mainstream.
     catalogue = [
         {"i": i, "title": h.get("title", ""), "type": h.get("type", ""),
+         "votes": int(h.get("votes") or 0),
          "desc": (h.get("description", "") or "")[:200]}
         for i, h in enumerate(hits)
     ]
@@ -421,6 +443,8 @@ def ground_with_llm(query: str, hits: list[dict], top_k: int = 12) -> list[dict]
         f"CANDIDATES (JSON):\n{json.dumps(catalogue, ensure_ascii=False)}\n\n"
         "Rules:\n"
         "- Only use items from CANDIDATES. Never invent titles.\n"
+        "- Strongly prefer popular, mainstream, widely-recognized titles (higher 'votes'); "
+        "only pick an obscure title (low/zero votes) when it is a clearly better match.\n"
         f"- Return up to {top_k} items.\n"
         'Respond with ONLY a JSON array of objects: {"i": <index>, "reason": "<one short sentence>"}.'
     )
@@ -460,3 +484,168 @@ def ground_with_llm(query: str, hits: list[dict], top_k: int = 12) -> list[dict]
     except Exception as e:  # noqa: BLE001
         print(f"⚠️  Grounded RAG failed, returning hybrid hits: {e}")
         return hits[:top_k]
+
+
+# --- Feed / personalization / detail helpers ---------------------------------
+
+def get_by_ids(ids: list) -> list[dict]:
+    """Fetch payload cards for specific point ids (order preserved as given)."""
+    ids = [i for i in ids if i and not str(i).startswith("ai-")]
+    if not ids:
+        return []
+    try:
+        pts = get_qdrant().retrieve(COLLECTION_NAME, ids=list(ids), with_payload=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"❌ retrieve failed: {e}")
+        return []
+    by_id = {str(p.id): _hit_to_dict(p) for p in pts}
+    return [by_id[str(i)] for i in ids if str(i) in by_id]
+
+
+def top_rated(top_k: int = 20, qfilter=None, min_rating: float = 7.5, max_rating: float = 9.2) -> list[dict]:
+    """
+    Highest-rated titles (optionally filtered by category). Uses a rating window to
+    avoid obscure perfect-score shorts dominating. Needs build_indexes.py first.
+    """
+    from qdrant_client import models
+
+    must = [models.FieldCondition(key="rating_f", range=models.Range(gte=min_rating, lte=max_rating))]
+    if qfilter is not None and getattr(qfilter, "must", None):
+        must += list(qfilter.must)
+    try:
+        pts, _ = get_qdrant().scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=models.Filter(must=must),
+            order_by=models.OrderBy(key="rating_f", direction=models.Direction.DESC),
+            limit=top_k,
+            with_payload=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️  top_rated failed (did you run build_indexes.py?): {e}")
+        return []
+    out = [_hit_to_dict(p) for p in pts]
+    for i, h in enumerate(out):
+        h["score"] = _score_for_ui(i, len(out))
+    return out
+
+
+def top_popular(top_k: int = 20, qfilter=None) -> list[dict]:
+    """
+    Most mainstream titles = highest `votes` (vote_count). Only items harvested
+    with a vote count qualify, so this naturally returns recognizable titles with
+    working TMDB posters (see harvest_popular.py). Falls back to top_rated if the
+    votes index isn't populated yet.
+    """
+    from qdrant_client import models
+
+    must = [models.FieldCondition(key="votes", range=models.Range(gte=200))]
+    if qfilter is not None and getattr(qfilter, "must", None):
+        must += list(qfilter.must)
+    try:
+        pts, _ = get_qdrant().scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=models.Filter(must=must),
+            order_by=models.OrderBy(key="votes", direction=models.Direction.DESC),
+            limit=top_k,
+            with_payload=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️  top_popular failed, falling back to top_rated: {e}")
+        return top_rated(top_k=top_k, qfilter=qfilter)
+    if not pts:
+        return top_rated(top_k=top_k, qfilter=qfilter)
+    out = [_hit_to_dict(p) for p in pts]
+    for i, h in enumerate(out):
+        h["score"] = _score_for_ui(i, len(out))
+    return out
+
+
+def for_you(positive_ids: list, negative_ids: list | None = None,
+            top_k: int = 20, exclude_ids: set | None = None) -> list[dict]:
+    """History-driven recommendations: wishlist/likes/views as positives, dismisses negative."""
+    positive_ids = [i for i in positive_ids if i and not str(i).startswith("ai-")]
+    if not positive_ids:
+        return []
+    # Cap positives so the profile stays coherent (most-recent first, deduped).
+    seen, pos = set(), []
+    for i in positive_ids:
+        if str(i) not in seen:
+            seen.add(str(i))
+            pos.append(i)
+    return recommend(
+        positive_ids=pos[:40],
+        negative_ids=[i for i in (negative_ids or []) if i][:20],
+        top_k=top_k,
+        exclude_ids=exclude_ids,
+    )
+
+
+def enrich_detail(media_id: str, payload: dict) -> dict:
+    """
+    Look the title up on TMDB (search by title+year) and return trailer / cast /
+    streaming providers. Returns full image URLs. Best-effort: empties on miss.
+    Callers should cache the result (see MediaDetail table).
+    """
+    import requests
+
+    key = os.getenv("TMDB_API_KEY")
+    title = (payload.get("title") or "").strip()
+    year = str(payload.get("year") or "")[:4]
+    category = str(payload.get("category") or payload.get("type") or "").upper()
+    prefer_tv = "TV" in category or "ANIME" in category
+
+    out = {"tmdb_id": None, "trailer_key": None, "cast": [], "providers": [],
+           "backdrop": None, "runtime": None, "poster": None}
+    if not key or not title:
+        return out
+
+    IMG = "https://image.tmdb.org/t/p"
+    try:
+        for kind in (["tv", "movie"] if prefer_tv else ["movie", "tv"]):
+            params = {"api_key": key, "query": title}
+            if year:
+                params["year" if kind == "movie" else "first_air_date_year"] = year
+            r = requests.get(f"https://api.themoviedb.org/3/search/{kind}", params=params, timeout=8)
+            results = r.json().get("results", []) if r.status_code == 200 else []
+            if not results:
+                continue
+
+            tid = results[0]["id"]
+            out["tmdb_id"] = tid
+            bd = results[0].get("backdrop_path")
+            out["backdrop"] = f"{IMG}/w780{bd}" if bd else None
+            ps = results[0].get("poster_path")
+            out["poster"] = f"{IMG}/w500{ps}" if ps else None
+
+            d = requests.get(
+                f"https://api.themoviedb.org/3/{kind}/{tid}",
+                params={"api_key": key, "append_to_response": "videos,credits,watch/providers"},
+                timeout=8,
+            ).json()
+
+            for v in d.get("videos", {}).get("results", []):
+                if v.get("site") == "YouTube" and v.get("type") in ("Trailer", "Teaser"):
+                    out["trailer_key"] = v.get("key")
+                    break
+            for c in d.get("credits", {}).get("cast", [])[:10]:
+                p = c.get("profile_path")
+                out["cast"].append({
+                    "name": c.get("name"),
+                    "character": c.get("character"),
+                    "profile": f"{IMG}/w185{p}" if p else None,
+                })
+            prov = d.get("watch/providers", {}).get("results", {}).get("US", {})
+            seen_p = set()
+            for bucket in ("flatrate", "free", "ads", "rent", "buy"):
+                for p in prov.get(bucket, []):
+                    n = p.get("provider_name")
+                    if n and n not in seen_p:
+                        seen_p.add(n)
+                        logo = p.get("logo_path")
+                        out["providers"].append({"name": n, "logo": f"{IMG}/w92{logo}" if logo else None})
+            rt = d.get("runtime") or (d.get("episode_run_time") or [None])[0]
+            out["runtime"] = rt
+            break
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️  enrich_detail error: {e}")
+    return out

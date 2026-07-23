@@ -5,7 +5,8 @@ python-multipart==0.0.9
 python-dotenv==1.0.1
 
 # --- Auth / DB ---
-sqlalchemy==2.0.25
+sqlalchemy>=2.0.37   # 2.0.25 breaks on Python 3.13 (TypingOnly assertion)
+psycopg2-binary      # Postgres driver — used when DATABASE_URL points at a hosted DB
 passlib[bcrypt]==1.7.4
 bcrypt==3.2.0
 python-jose[cryptography]
