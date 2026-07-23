@@ -27,6 +27,7 @@ Every `internal` search:
 3. **Fusion** — Qdrant's Query API fuses dense + sparse with **Reciprocal Rank Fusion (RRF)**.
 4. **Cross-encoder rerank** — `cross-encoder/ms-marco-MiniLM-L-6-v2` rescores the fused candidates.
 5. **Exact-title pin** — a normalized exact title match is pinned to the top.
+6. **Calibrated match %** — the cross-encoder relevance logit is temperature-scaled through a sigmoid into an honest 0–99 match score (pins floored, everything else capped), so the number reflects real relevance instead of raw list rank.
 
 Everything runs **locally** — no per-query external inference API. Qdrant itself is Qdrant Cloud.
 
@@ -143,7 +144,7 @@ You need **both** processes running — if the backend is down, the UI shows **O
 
 ## 🗄️ Durable database (production)
 
-Local dev defaults to SQLite (`backend/freeme.db`). For production (e.g. Render's ephemeral disk wipes SQLite on redeploy), point `DATABASE_URL` at a hosted Postgres — **[Neon](https://neon.tech)** (free, serverless), Supabase, or Render Postgres all work. Paste the connection string into `DATABASE_URL`; tables auto-create on startup (no migrations). Legacy `postgres://` URLs are normalized automatically. Do **not** enable Neon Auth — Nexus uses its own JWT auth.
+Local dev defaults to SQLite (`backend/freeme.db`). Set `DATABASE_URL` to a hosted Postgres and every account, wishlist, search, and interaction persists there instead — this deployment runs on **[Neon](https://neon.tech)** (free, serverless). Supabase or Render Postgres work identically. Paste the connection string into `DATABASE_URL`; tables auto-create on startup (no migrations). Legacy `postgres://` URLs are normalized automatically, and `pool_pre_ping` revives the connections Neon drops when idle. Do **not** enable Neon Auth — Nexus uses its own JWT auth.
 
 ---
 

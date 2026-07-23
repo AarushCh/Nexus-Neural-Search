@@ -223,8 +223,10 @@ def _title_lookup(query: str, limit: int = 8, qfilter=None) -> list[dict]:
         card = _hit_to_dict(p)
         nt = _normalize(card.get("title", ""))
         if nt == nq:
+            card["_pin"] = "exact"
             exact.append(card)
         elif nt.startswith(nq + " ") or nt.startswith(nq):
+            card["_pin"] = "prefix"
             prefix.append(card)
     exact.sort(key=_rating, reverse=True)
     prefix.sort(key=_rating, reverse=True)
@@ -232,10 +234,64 @@ def _title_lookup(query: str, limit: int = 8, qfilter=None) -> list[dict]:
 
 
 def _score_for_ui(rank: int, total: int) -> int:
-    """Map final rank -> a 60-99 "% MATCH" the frontend badge expects."""
+    """Rank-based %MATCH — fallback only, used when no reranker score exists."""
     if total <= 1:
         return 99
     return int(99 - (rank / max(total - 1, 1)) * 39)
+
+
+def _sigmoid(x: float) -> float:
+    import math
+    if x <= -30:
+        return 0.0
+    if x >= 30:
+        return 1.0
+    return 1.0 / (1.0 + math.exp(-x))
+
+
+# Calibration for the cross-encoder logit -> %MATCH. Raw sigmoid collapses
+# (short/vague queries score uniformly negative -> everything ~0%), so we shift
+# and temperature-scale first. Tuned on ms-marco-MiniLM logits so an irrelevant
+# hit (~-11) reads ~30%, a borderline one (~-3) ~70%, and a strong match (~+3+)
+# ~90%+ — an honest spread rather than a fake 99% for the top of every list.
+_CAL_SHIFT = 7.0
+_CAL_TEMP = 4.6
+
+
+def _calibrate_scores(query: str, cards: list[dict], logit_key: str = "rerank") -> None:
+    """Attach a genuine `score` (% MATCH) to each card from the cross-encoder
+    relevance logit (sigmoid -> probability), so the badge reflects how well a
+    result actually matches the query — not merely its rank position.
+
+    Cards missing a logit (e.g. exact/prefix title pins that bypassed the
+    reranker) are scored on the spot. Exact/prefix pins are floored high (you
+    typed the name), other results are capped just below so the pins still read
+    as the strongest. Falls back to rank-based % only when the reranker is off.
+    """
+    missing = [c for c in cards if logit_key not in c]
+    cross = _get_cross_encoder() if (ENABLE_RERANK and missing) else None
+    if cross is not None:
+        pairs = [[query, f"{c.get('title','')}. {c.get('description','')}"[:512]] for c in missing]
+        try:
+            for c, s in zip(missing, cross.predict(pairs)):
+                c[logit_key] = float(s)
+        except Exception as e:  # noqa: BLE001
+            print(f"⚠️  Score calibration failed: {e}")
+    for i, c in enumerate(cards):
+        if logit_key in c:
+            pct = round(_sigmoid((c[logit_key] + _CAL_SHIFT) / _CAL_TEMP) * 100)
+            pin = c.get("_pin")
+            if pin == "exact":
+                pct = max(pct, 97)
+            elif pin == "prefix":
+                pct = max(pct, 88)
+            else:
+                pct = min(pct, 96)
+            c["score"] = max(3, min(99, pct))
+        else:
+            c["score"] = _score_for_ui(i, len(cards))
+        c.pop(logit_key, None)
+        c.pop("_pin", None)
 
 
 def hybrid_search(text: str, top_k: int = 12, prefetch: int = 60, qfilter=None) -> list[dict]:
@@ -296,9 +352,7 @@ def hybrid_search(text: str, top_k: int = 12, prefetch: int = 60, qfilter=None) 
         if len(final) >= top_k:
             break
 
-    for i, h in enumerate(final):
-        h["score"] = _score_for_ui(i, len(final))
-        h.pop("rerank", None)
+    _calibrate_scores(text, final)
     return final
 
 
@@ -397,9 +451,7 @@ def similar_items(item_id, top_k: int = 12) -> list[dict]:
     ))
 
     out = cands[:top_k]
-    for i, c in enumerate(out):
-        c["score"] = _score_for_ui(i, len(out))
-        c.pop("_rr", None)
+    _calibrate_scores(src_text, out, logit_key="_rr")
     return out
 
 
