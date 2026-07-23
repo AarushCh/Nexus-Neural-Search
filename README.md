@@ -10,7 +10,7 @@
 
 ---
 
-# [Live Website](https://aarushch.github.io/Nexus-Neural-Search/)
+# [Live Website](https://nexus-neural-search-pi.vercel.app/)
 
 ---
 
