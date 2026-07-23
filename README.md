@@ -10,6 +10,10 @@
 
 ---
 
+# [Live Website](https://aarushch.github.io/Nexus-Neural-Search/)
+
+---
+
 ## 📖 Overview
 
 Ask Nexus for *"cyberpunk anime about identity"* **or** an exact title like *"Cyberpunk: Edgerunners"* — it handles both. Every query runs **hybrid retrieval** (dense semantic vectors + BM25 keyword matching), fuses the two with Reciprocal Rank Fusion, and **reranks with a cross-encoder** for final accuracy. On top of that sits a full product: user accounts, a personalized home feed, wishlist/favourites, search history, view tracking, and flagship detail pages with trailers, cast, and where-to-watch.
