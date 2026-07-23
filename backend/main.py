@@ -16,6 +16,7 @@ and a TMDB-enriched title detail endpoint.
 import json
 import os
 from datetime import datetime
+from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -64,10 +65,10 @@ class SearchRequest(BaseModel):
     text: str
     top_k: int = 12
     model: str = "internal"
-    category: str | None = None
-    min_rating: float | None = None
-    year_min: int | None = None
-    year_max: int | None = None
+    category: Optional[str] = None
+    min_rating: Optional[float] = None
+    year_min: Optional[int] = None
+    year_max: Optional[int] = None
 
 
 class AuthRequest(BaseModel):
