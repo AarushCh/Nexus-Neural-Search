@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 from jose import jwt, JWTError
 from passlib.context import CryptContext
@@ -10,7 +11,8 @@ from backend.models import User
 
 # ---------------- CONFIG ----------------
 
-SECRET_KEY = "CHANGE_ME_IN_PROD"
+# Read from env in production; the dev default only applies locally.
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-insecure-secret-change-me")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 

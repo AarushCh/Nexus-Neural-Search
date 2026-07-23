@@ -1,40 +1,39 @@
-from fastapi import FastAPI, Depends, HTTPException
+"""
+Nexus API.
+
+Routes are thin; all retrieval logic lives in backend/engine.py.
+
+Search modes (frontend sends `model`):
+  * "internal" -> hybrid vector search (dense + BM25 + cross-encoder rerank)
+  * "api"      -> grounded RAG: same hybrid retrieval, then Nemotron reranks/explains
+                  REAL results (no hallucinated titles).
+"""
+
+import os
+
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from backend.database import Base, engine, SessionLocal
+
+from backend.auth import get_current_user_db, hash_password, login_user
+from backend.database import Base, SessionLocal, engine
+from backend.engine import (
+    COLLECTION_NAME,
+    get_qdrant,
+    ground_with_llm,
+    hybrid_search,
+    recommend,
+    similar_items,
+)
 from backend.models import User, WishlistItem
-from backend.auth import get_current_user_db, login_user, hash_password
-import requests
-import json
-import re
-import os
-import time
-import uuid
-from dotenv import load_dotenv
-from qdrant_client import models
-from openai import OpenAI  # <--- NEW CLIENT
 
-# --- CONFIGURATION ---
-load_dotenv()
-
-HF_TOKEN = os.environ.get("HF_TOKEN")
-QDRANT_URL = os.environ.get("QDRANT_URL")
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-
-# Model: BAAI/bge-small-en-v1.5 (Embeddings)
-HF_API_URL = "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5"
-
-# ✅ NEW MODEL: NVIDIA Nemotron
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free")
-
-app = FastAPI(title="Nexus God Mode Engine")
+app = FastAPI(title="Nexus Neural Search")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,137 +41,44 @@ app.add_middleware(
 
 Base.metadata.create_all(bind=engine)
 
-# --- 🧠 CORE AI FUNCTIONS ---
-
-def get_embedding(text):
-    if not HF_TOKEN: return None
-    payload = {"inputs": [text], "options": {"wait_for_model": True}}
-    for attempt in range(3):
-        try:
-            response = requests.post(
-                HF_API_URL, headers={"Authorization": f"Bearer {HF_TOKEN}"}, json=payload, timeout=8
-            )
-            if response.status_code == 200:
-                data = response.json()
-                if isinstance(data, list) and len(data) > 0:
-                    return data[0] if isinstance(data[0], list) else data
-            if response.status_code == 503:
-                time.sleep(2)
-                continue
-            break
-        except:
-            continue
-    return None
-
-def get_qdrant():
-    from qdrant_client import QdrantClient
-    url = QDRANT_URL
-    if url and url.startswith("ttps://"): url = url.replace("ttps://", "https://")
-    return QdrantClient(url=url, api_key=QDRANT_API_KEY)
 
 def get_db():
     db = SessionLocal()
-    try: yield db
-    finally: db.close()
-
-def safe_vector_search(vector, limit=50):
-    try: 
-        q_client = get_qdrant()
-        return q_client.query_points(collection_name="freeme_collection", query=vector, limit=limit).points
-    except: return []
-
-# --- 🧠 GOD MODE GENERATOR (REAL POSTERS VERSION) ---
-def get_llm_recommendations(query):
-    print(f"🧠 NVIDIA NEMOTRON: Reasoning about '{query}'...") 
-
-    if not OPENROUTER_API_KEY:
-        print("❌ ERROR: No API Key.")
-        return []
-
     try:
-        # 1. Initialize OpenAI Client
-        client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=OPENROUTER_API_KEY,
-        )
+        yield db
+    finally:
+        db.close()
 
-        # 2. Prompt (Simplified: Don't ask for images, just data)
-        prompt = f"""
-        You are a movie database API. 
-        User Request: "{query}"
-        
-        Generate 12 unique recommendations.
-        Return strictly a JSON array of objects. 
-        Each object must have:
-        - "title": (String) Exact Title
-        - "description": (String) 1 sentence plot summary.
-        - "rating": (Float) IMDB style rating (e.g. 8.5)
-        - "type": (String) One of: MOVIE, TV, ANIME, DOCUMENTARY
-        
-        Do NOT include markdown formatting. Just the raw JSON.
-        """
-        
-        print("   ➡️ Sending request to OpenRouter...")
 
-        # 3. Call API
-        completion = client.chat.completions.create(
-            model=OPENROUTER_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            extra_headers={"HTTP-Referer": "http://nexus-search.com"},
-            extra_body={"reasoning": {"enabled": True}}
-        )
+# --- Schemas ------------------------------------------------------------------
 
-        # 4. Extract Content
-        content = completion.choices[0].message.content
-        print("   ⬅️ Received Response")
+class SearchRequest(BaseModel):
+    text: str
+    top_k: int = 12
+    model: str = "internal"
 
-        # 5. Clean & Parse
-        clean_content = re.sub(r'```json|```', '', content).strip()
-        match = re.search(r'\[.*\]', clean_content, re.DOTALL)
-        
-        if match:
-            data = json.loads(match.group())
-            results = []
-            
-            for item in data:
-                # ✨ TRICK: Use a Search Thumbnail Proxy to find the REAL poster
-                # This searches Bing Images for "{Title} Movie Poster" and returns the first result
-                safe_title = item['title'].replace(" ", "%20")
-                image_url = f"https://tse4.mm.bing.net/th?q={safe_title}%20movie%20poster&w=400&h=600&c=7&rs=1"
-                
-                results.append({
-                    "id": f"ai-{uuid.uuid4()}",
-                    "title": item.get('title', 'Unknown'),
-                    "description": item.get('description', 'AI Generated.'),
-                    "rating": item.get('rating', 0),
-                    "type": item.get('type', 'MOVIE').upper(),
-                    "image": image_url, # ✅ NOW A WORKING REAL LINK
-                    "score": 99
-                })
-            
-            print(f"✨ SUCCESS: Generated {len(results)} tiles with Real Posters.")
-            return results
-        else:
-            print(f"⚠️ PARSE ERROR: {content[:100]}...")
 
-    except Exception as e:
-        print(f"❌ CRASH: {e}")
+class AuthRequest(BaseModel):
+    username: str
+    email: str
+    password: str
 
-    return []
 
-# --- ROUTES ---
+class SimilarRequest(BaseModel):
+    id: str
 
-class UserRequest(BaseModel): text: str; top_k: int = 12; model: str = "internal"
-class PersonalizedRequest(BaseModel): text: str; top_k: int = 12; model: str = "internal"
-class AuthRequest(BaseModel): username: str; email: str; password: str
-class SimilarRequest(BaseModel): id: str
+
+# --- Health / Auth ------------------------------------------------------------
 
 @app.get("/")
-def health_check(): return {"status": "online", "mode": "GOD_MODE_NVIDIA"}
+def health_check():
+    return {"status": "online", "engine": "hybrid+rerank"}
+
 
 @app.post("/login")
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     return login_user(form, db)
+
 
 @app.post("/signup")
 def signup(data: AuthRequest, db: Session = Depends(get_db)):
@@ -183,78 +89,93 @@ def signup(data: AuthRequest, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "created"}
 
+
+# --- Search -------------------------------------------------------------------
+
+def _search(text: str, top_k: int, model: str) -> list[dict]:
+    # Always retrieve real hits from the DB first.
+    hits = hybrid_search(text, top_k=top_k if model != "api" else max(top_k, 20))
+    if model == "api":
+        # Grounded RAG: Nemotron only reorders/explains these real hits.
+        return ground_with_llm(text, hits, top_k=top_k)
+    return hits[:top_k]
+
+
 @app.post("/recommend")
-def recommend(req: UserRequest):
-    # 1. If user wants AI (God Mode)
-    if req.model == 'api':
-        results = get_llm_recommendations(req.text)
-        if results: return results
-        # If AI fails, fall through to vector search
-    
-    # 2. Standard Vector Search (Fallback)
-    vector = get_embedding(req.text)
-    if not vector: return []
-    hits = safe_vector_search(vector, limit=req.top_k)
-    results = []
-    for h in hits:
-        item = h.payload
-        item["id"] = h.id
-        item["score"] = int(h.score * 100) if h.score else 0 
-        results.append(item)
-    return results
+def recommend_route(req: SearchRequest):
+    return _search(req.text, req.top_k, req.model)
+
 
 @app.post("/recommend/personalized")
-def personalized(req: PersonalizedRequest, user=Depends(get_current_user_db)):
-    return recommend(UserRequest(text=req.text, top_k=req.top_k, model=req.model))
+def personalized(req: SearchRequest, user=Depends(get_current_user_db), db: Session = Depends(get_db)):
+    """Hybrid search, then blend in items similar to the user's wishlist."""
+    base = _search(req.text, req.top_k, req.model)
+
+    wishlist_ids = [i.media_id for i in db.query(WishlistItem).filter_by(user_id=user.id).all()]
+    if not wishlist_ids or req.model == "api":
+        return base
+
+    # Real personalization: recommend from wishlist, then interleave with the query results.
+    liked = recommend(positive_ids=wishlist_ids, top_k=req.top_k, exclude_ids=set(wishlist_ids))
+    return _interleave(base, liked, req.top_k)
+
+
+def _interleave(primary: list[dict], secondary: list[dict], limit: int) -> list[dict]:
+    out, seen = [], set()
+    for a, b in zip(primary, secondary + [None] * len(primary)):
+        for item in (a, b):
+            if item and str(item.get("id")) not in seen:
+                seen.add(str(item["id"]))
+                out.append(item)
+    for item in primary + secondary:
+        if str(item.get("id")) not in seen:
+            seen.add(str(item["id"]))
+            out.append(item)
+    return out[:limit]
+
 
 @app.post("/similar")
 def similar(req: SimilarRequest):
-    q_client = get_qdrant()
-    if str(req.id).startswith("ai-"): return [] 
-    try:
-        tgt = q_client.retrieve("freeme_collection", ids=[req.id], with_vectors=True)
-        if not tgt: return []
-        hits = safe_vector_search(tgt[0].vector, limit=13)
-        results = []
-        for h in hits:
-            if str(h.id) != str(req.id):
-                item = h.payload
-                item["id"] = h.id
-                item["score"] = 95
-                results.append(item)
-        return results[:12]
-    except:
-        return []
+    return similar_items(req.id, top_k=12)
+
+
+# --- Wishlist -----------------------------------------------------------------
 
 @app.post("/wishlist/add/{mid}")
-def add_w(mid: str, u=Depends(get_current_user_db), db: Session = Depends(get_db)):
-    if mid.startswith("ai-"): raise HTTPException(status_code=400, detail="Cannot save AI items.")
+def add_wishlist(mid: str, u=Depends(get_current_user_db), db: Session = Depends(get_db)):
+    if mid.startswith("ai-"):
+        raise HTTPException(status_code=400, detail="Cannot save AI items.")
     if not db.query(WishlistItem).filter_by(user_id=u.id, media_id=mid).first():
         db.add(WishlistItem(user_id=u.id, media_id=mid))
         db.commit()
     return {"status": "ok"}
 
+
 @app.delete("/wishlist/remove/{mid}")
-def rem_w(mid: str, u=Depends(get_current_user_db), db: Session = Depends(get_db)):
+def remove_wishlist(mid: str, u=Depends(get_current_user_db), db: Session = Depends(get_db)):
     db.query(WishlistItem).filter_by(user_id=u.id, media_id=mid).delete()
     db.commit()
     return {"status": "ok"}
 
+
 @app.get("/wishlist")
-def get_w(u=Depends(get_current_user_db), db: Session = Depends(get_db)):
-    q_client = get_qdrant()
+def get_wishlist(u=Depends(get_current_user_db), db: Session = Depends(get_db)):
     ids = [i.media_id for i in db.query(WishlistItem).filter_by(user_id=u.id).all()]
-    if not ids: return []
-    try: 
-        points = q_client.retrieve("freeme_collection", ids=ids)
-        results = []
-        for p in points:
-            item = p.payload
-            item["id"] = p.id
-            results.append(item)
-        return results
-    except: return []
+    if not ids:
+        return []
+    try:
+        points = get_qdrant().retrieve(COLLECTION_NAME, ids=ids, with_payload=True)
+    except Exception:
+        return []
+    results = []
+    for p in points:
+        item = dict(p.payload or {})
+        item["id"] = p.id
+        results.append(item)
+    return results
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=10000, reload=True)
+
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=int(os.getenv("PORT", 10000)), reload=True)

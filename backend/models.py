@@ -20,7 +20,8 @@ class WishlistItem(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    media_id = Column(Integer, nullable=False)
+    # Qdrant point ids are uuid5 strings, so this must be a String (not Integer).
+    media_id = Column(String, nullable=False)
     added_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="wishlist")

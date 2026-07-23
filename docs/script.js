@@ -231,12 +231,17 @@ document.addEventListener("DOMContentLoaded", () => {
         filtered.forEach(item => {
             const card = document.createElement('div'); card.className = 'card';
 
-            // ✅ IMAGE LOGIC FIX
-            let imgUrl = `https://placehold.co/300x450/111/FFF?text=${encodeURIComponent(item.title)}`;
-            if (item.image && (item.image.includes("pollinations") || item.image.includes("bing.net"))) {
-                imgUrl = item.image;
-            } else if (item.image && item.image.length > 5 && !item.image.includes("null")) {
-                imgUrl = `https://wsrv.nl/?url=${encodeURIComponent(item.image)}&w=400&output=webp`;
+            // ✅ IMAGE LOGIC + broken-thumbnail fallback
+            const placeholder = `https://placehold.co/300x450/111/FFF?text=${encodeURIComponent(item.title)}`;
+            let imgUrl = placeholder;
+            let rawImg = (item.image || "").trim();
+            // Dead legacy MyAnimeList CDN — never resolves, skip straight to placeholder.
+            const isDead = rawImg.includes("cdn-dena.com") || rawImg.includes("myanimelist.cdn-dena");
+            if (rawImg && !isDead && (rawImg.includes("pollinations") || rawImg.includes("bing.net"))) {
+                imgUrl = rawImg;
+            } else if (rawImg && !isDead && rawImg.length > 5 && !rawImg.includes("null")) {
+                // Proxy through wsrv.nl (resizes + webp); on failure the <img> onerror swaps to placeholder.
+                imgUrl = `https://wsrv.nl/?url=${encodeURIComponent(rawImg)}&w=400&output=webp&default=${encodeURIComponent(placeholder)}`;
             }
 
             const isSaved = WISHLIST_IDS.has(item.id);
@@ -251,7 +256,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const exploreBtn = isSimilarView ? '' : `<button class="similar-btn" onclick="window.findSimilar('${item.id}', '${safeTitle}')">EXPLORE SIMILAR</button>`;
 
             card.innerHTML = `
-                <div class="card-media-wrapper"><img src="${imgUrl}" loading="lazy" onload="this.classList.add('loaded')"><div class="match-bar-track"><span class="match-label-base label-cyan">${item.score || 85}% MATCH</span></div></div>
+                <div class="card-media-wrapper"><img src="${imgUrl}" loading="lazy" onload="this.classList.add('loaded')" onerror="this.onerror=null;this.src='${placeholder}';this.classList.add('loaded')"><div class="match-bar-track"><span class="match-label-base label-cyan">${item.score || 85}% MATCH</span></div></div>
                 <div class="card-content">
                     <div class="badge-row">
                         <span class="type-badge type-${typeClass}">${type}</span>

@@ -24,3 +24,4 @@ qdrant_storage/
 # --- Optional: Data (If files are >100MB) ---
 # raw_data/
 # dataset.csv
+dataset_backup.csv

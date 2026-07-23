@@ -1,12 +1,28 @@
+# --- Web / API ---
 fastapi==0.109.0
 uvicorn==0.27.0
-sqlalchemy==2.0.25
-pydantic==2.6.0
-qdrant-client>=1.7.0
-passlib[bcrypt]==1.7.4
-python-jose[cryptography]
-python-dotenv==1.0.1
 python-multipart==0.0.9
-requests==2.31.0
-openai
+python-dotenv==1.0.1
+
+# --- Auth / DB ---
+sqlalchemy==2.0.25
+passlib[bcrypt]==1.7.4
 bcrypt==3.2.0
+python-jose[cryptography]
+
+# --- Vector DB (Qdrant Cloud) --- server is 1.18.x, keep client within one minor
+qdrant-client>=1.14.0
+
+# --- Local embeddings + reranking (no external inference API) ---
+# torch CPU wheel: install with
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch
+sentence-transformers>=2.7.0
+fastembed>=0.3.6
+
+# --- Grounded RAG (OpenRouter / Nemotron) ---
+openai
+
+# --- Data / ingest ---
+pandas
+requests==2.31.0

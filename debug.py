@@ -1,51 +1,30 @@
-from qdrant_client import QdrantClient
+"""
+Quick sanity check for the Nexus hybrid engine.
 
-# Connect to Qdrant
-client = QdrantClient(path="freeme_qdrant_db")
-COLLECTION_NAME = "freeme_collection"
+Run after creating a new Qdrant cluster + ingesting:
+    python debug.py
+"""
 
-print("---------------------------------------------")
-print(f"🔍 Checking Neural Database: {COLLECTION_NAME}")
-print("---------------------------------------------")
-
-try:
-    # 1. Check if Collection Exists
-    if not client.collection_exists(COLLECTION_NAME):
-        print(f"❌ ERROR: Collection '{COLLECTION_NAME}' does not exist!")
-        print("👉 FIX: You must run 'python ingest.py' again.")
-        exit()
-
-    # 2. Check Item Count
-    info = client.get_collection(COLLECTION_NAME)
-    count = info.points_count
-    print(f"📊 Total Memories Found: {count}")
-
-    if count == 0:
-        print("⚠️  WARNING: Collection exists but is EMPTY.")
-        print("👉 FIX: Run 'python ingest.py' to load the data.")
-    else:
-        print("✅ SUCCESS: The Brain is loaded and ready.")
-        
-        # 3. Test a Search manually to verify connections
-        from sentence_transformers import SentenceTransformer
-        print("\n🧪 Running Test Search for 'Action Movie'...")
-        model = SentenceTransformer('all-MiniLM-L6-v2')
-        vector = model.encode("Action Movie").tolist()
-        
-        results = client.search(
-            collection_name=COLLECTION_NAME,
-            query_vector=vector,
-            limit=1
-        )
-        
-        if results:
-            print(f"🎉 Search Works! Found: {results[0].payload['title']}")
-        else:
-            print("❌ Search returned 0 results (This shouldn't happen if count > 0).")
-
-except Exception as e:
-    print(f"❌ CRITICAL ERROR: Could not connect to Qdrant.")
-    print(f"Details: {e}")
-    print("👉 Ensure Docker is running: 'docker ps'")
+from backend.engine import COLLECTION_NAME, get_qdrant, hybrid_search
 
 print("---------------------------------------------")
+print(f"🔍 Checking collection: {COLLECTION_NAME}")
+print("---------------------------------------------")
+
+client = get_qdrant()
+
+if not client.collection_exists(COLLECTION_NAME):
+    print("❌ Collection missing. Run: python ingest.py")
+    raise SystemExit(1)
+
+count = client.count(COLLECTION_NAME).count
+print(f"📊 Points stored: {count}")
+if count == 0:
+    print("⚠️  Empty collection. Run: python ingest.py")
+    raise SystemExit(1)
+
+print("\n🧪 Hybrid test search: 'cyberpunk anime about identity'")
+for i, hit in enumerate(hybrid_search("cyberpunk anime about identity", top_k=5), 1):
+    print(f"   {i}. [{hit.get('score')}%] {hit.get('title')}  ({hit.get('type')})")
+
+print("\n✅ Engine is live.")
