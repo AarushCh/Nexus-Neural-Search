@@ -11,15 +11,18 @@ passlib[bcrypt]==1.7.4
 bcrypt==3.2.0
 python-jose[cryptography]
 
-# --- Vector DB (Qdrant Cloud) --- server is 1.19.x, keep client within one minor
-qdrant-client>=1.19.0,<1.20.0
+# --- Vector DB (Qdrant Cloud) --- server is 1.19.x; client capped at 1.16.x (newest that
+# supports Python 3.9, which Render runs). Version-mismatch warning is expected and harmless.
+qdrant-client>=1.16.0,<1.17.0
 
-# --- Local embeddings + reranking (no external inference API) ---
-# torch CPU wheel: install with
-#   pip install torch --index-url https://download.pytorch.org/whl/cpu
-torch
-sentence-transformers>=2.7.0
+# --- Local embeddings (ONNX, no external inference API) ---
+# fastembed runs dense (bge-small) + sparse (bm25) on onnxruntime — no torch, fits Render's
+# 512MB free tier.
 fastembed>=0.3.6
+# Optional cross-encoder rerank (ENABLE_RERANK=true). Heavy (~600MB) — install only on a host
+# with spare RAM, NOT Render free:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install sentence-transformers>=2.7.0
 
 # --- Grounded RAG (OpenRouter / Nemotron) ---
 openai

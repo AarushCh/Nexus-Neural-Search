@@ -44,8 +44,10 @@ RERANK_MODEL = os.getenv("RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 # bge models want an instruction prefix on the QUERY side only.
 QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
 
-# Feature flags (let a low-RAM host such as Render free tier disable the reranker).
-ENABLE_RERANK = os.getenv("ENABLE_RERANK", "true").lower() == "true"
+# Feature flags. Rerank is OFF by default: the cross-encoder needs torch (~600MB) and OOMs
+# on Render's 512MB free tier. Set ENABLE_RERANK=true only on a host with spare RAM (and
+# install sentence-transformers + torch there).
+ENABLE_RERANK = os.getenv("ENABLE_RERANK", "false").lower() == "true"
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE", "true").lower() == "true"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -86,9 +88,10 @@ def _get_dense():
     if _dense_model is None:
         with _lock:
             if _dense_model is None:
-                from sentence_transformers import SentenceTransformer
+                # ONNX runtime (no torch) — keeps RAM under Render's 512MB free tier.
+                from fastembed import TextEmbedding
 
-                _dense_model = SentenceTransformer(DENSE_MODEL)
+                _dense_model = TextEmbedding(DENSE_MODEL)
     return _dense_model
 
 
@@ -121,12 +124,12 @@ def _get_cross_encoder():
 # --- Embedding helpers --------------------------------------------------------
 
 def embed_query(text: str) -> list[float]:
-    return _get_dense().encode(QUERY_INSTRUCTION + text, normalize_embeddings=True).tolist()
+    # fastembed returns normalized vectors; Qdrant cosine is scale-invariant regardless.
+    return next(_get_dense().embed([QUERY_INSTRUCTION + text])).tolist()
 
 
 def embed_docs(texts: list[str]) -> list[list[float]]:
-    vecs = _get_dense().encode(texts, normalize_embeddings=True, batch_size=64, show_progress_bar=False)
-    return [v.tolist() for v in vecs]
+    return [v.tolist() for v in _get_dense().embed(list(texts), batch_size=64)]
 
 
 def _to_sparse_vector(embedding):
