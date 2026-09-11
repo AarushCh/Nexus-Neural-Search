@@ -43,6 +43,9 @@ export default function Home() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [history, setHistory] = useState<{ query: string; at: string }[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  // The results the user left behind when opening a similar-items view, so
+  // "RETURN TO SEARCH" goes back to them instead of dumping them at home.
+  const priorResults = useRef<Media[] | null>(null);
   const lastQuery = useRef("");
   const urlBootstrap = useRef(false);
 
@@ -103,10 +106,12 @@ export default function Home() {
           data = await api.search(q, { model, token: null, filters });
         }
         setResults(data);
+        priorResults.current = data;
         setProblem(data.length ? null : "none");
       } catch (e) {
         const msg = (e as Error).message;
         setResults([]);
+        priorResults.current = null;
         setProblem(msg === "INDEX_DOWN" ? "index" : msg === "TIMEOUT" ? "timeout" : "offline");
         checkHealth();
       } finally {
@@ -271,8 +276,28 @@ export default function Home() {
         )}
 
         {showBack && (
-          <button className="back-btn" onClick={() => { urlBootstrap.current = false; window.history.replaceState({}, "", "/"); setView("home"); loadFeed(); }}>
-            ← RETURN TO SEARCH
+          <button
+            className="back-btn"
+            onClick={() => {
+              urlBootstrap.current = false;
+              const back = view === "similar" && priorResults.current?.length ? priorResults.current : null;
+              if (back) {
+                const p = new URLSearchParams({ q: lastQuery.current });
+                if (category !== "ALL") p.set("cat", category);
+                if (minRating) p.set("rating", String(minRating));
+                window.history.replaceState({}, "", `/?${p.toString()}`);
+                setSimilarTitle("");
+                setResults(back);
+                setProblem(null);
+                setView("results");
+              } else {
+                window.history.replaceState({}, "", "/");
+                setView("home");
+                loadFeed();
+              }
+            }}
+          >
+            {view === "similar" && priorResults.current?.length ? "← RETURN TO SEARCH" : "← RETURN HOME"}
           </button>
         )}
 

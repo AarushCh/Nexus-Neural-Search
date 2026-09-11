@@ -75,6 +75,54 @@ def vector_type() -> str:
     return _VECTOR_TYPE
 
 
+# How wide to walk the HNSW graph when a filter is present. The default (40) is
+# tuned for unfiltered search and is far too narrow once a WHERE clause throws
+# most candidates away.
+FILTERED_EF_SEARCH = int(os.getenv("FILTERED_EF_SEARCH", "200"))
+
+_ITERATIVE_SCAN = None
+
+
+def _supports_iterative_scan() -> bool:
+    """pgvector >= 0.8 can keep scanning until the LIMIT is satisfied."""
+    global _ITERATIVE_SCAN
+    if _ITERATIVE_SCAN is None:
+        try:
+            with engine.connect() as cx:
+                v = cx.execute(text(
+                    "SELECT extversion FROM pg_extension WHERE extname='vector'")).scalar()
+            major, minor = (int(x) for x in str(v).split(".")[:2])
+            _ITERATIVE_SCAN = (major, minor) >= (0, 8)
+        except Exception:  # noqa: BLE001 - assume the conservative path
+            _ITERATIVE_SCAN = False
+    return _ITERATIVE_SCAN
+
+
+def _tune_filtered_scan(cx) -> None:
+    """Make an HNSW scan survive a selective WHERE clause.
+
+    The index walks a fixed-size candidate list and the filter is applied to
+    whatever that walk happens to find — so a selective filter returns fewer
+    rows than LIMIT, or none at all, while thousands of matching rows sit in the
+    table. Searching "something mellow chill" with category=ANIME returned zero
+    for exactly this reason: every candidate in the default window was
+    live-action. SET LOCAL, so it lasts one statement and never leaks into
+    another request on the same pooled connection.
+    """
+    stmts = [f"SET LOCAL hnsw.ef_search = {FILTERED_EF_SEARCH}"]
+    if _supports_iterative_scan():
+        stmts.append("SET LOCAL hnsw.iterative_scan = relaxed_order")
+    for stmt in stmts:
+        # A savepoint, so an unsupported knob on some other Postgres build
+        # cannot poison the transaction and take search down with it. Worst
+        # case the scan runs with server defaults, exactly as it did before.
+        try:
+            with cx.begin_nested():
+                cx.execute(text(stmt))
+        except Exception:  # noqa: BLE001 - tuning is best-effort
+            pass
+
+
 class StoreUnavailable(RuntimeError):
     """The catalogue tables are missing or unreachable."""
 
@@ -326,6 +374,8 @@ def hybrid_candidates(query: str, embedding: list, limit: int = 60,
     """
     params["ts_config"] = TS_CONFIG
     with engine.connect() as cx:
+        if filter_sql:
+            _tune_filtered_scan(cx)
         rows = cx.execute(text(sql), params).mappings().all()
 
     cards, cosines, dense, lexical = {}, {}, [], []
