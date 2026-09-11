@@ -177,6 +177,14 @@ def analyze() -> None:
 def health() -> dict:
     """Real state of the catalogue. An empty table is a FAILURE, not an empty
     result set — a vanished index used to look exactly like 'no matches'."""
+    if engine.dialect.name != "postgresql":
+        # Without DATABASE_URL the app falls back to SQLite for local dev, and
+        # the first catalogue query then fails with an opaque "no such function"
+        # error. Say the actual cause instead.
+        return {"ok": False, "titles": 0,
+                "error": "DATABASE_URL is not set to Postgres "
+                         f"(running on {engine.dialect.name}); the catalogue "
+                         "needs Postgres with pgvector"}
     try:
         with engine.connect() as cx:
             exists = cx.execute(text(
