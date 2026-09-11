@@ -15,13 +15,13 @@ title detail, and tag facet counts for the filter bar.
 
 import os
 import time
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy.orm import Session
 
 from backend.auth import get_current_user_db, hash_password, login_user
@@ -107,7 +107,12 @@ def limit(count: int, window: float = 60.0):
 class SearchRequest(BaseModel):
     # Bounds are enforced here so a crafted body can't ask for a 100k-wide
     # prefetch or push a novel through the embedding model.
-    text: str = Field(min_length=1, max_length=500)
+    # Strip before validating, or "   " passes min_length and the engine embeds
+    # three spaces, returning an arbitrary slice of the catalogue as if it were
+    # a result set. StringConstraints, not Field(strip_whitespace=...) — that
+    # keyword is silently ignored on Field in Pydantic v2.
+    text: Annotated[str, StringConstraints(strip_whitespace=True,
+                                           min_length=1, max_length=500)]
     top_k: int = Field(default=12, ge=1, le=60)
     model: str = "internal"
     category: Optional[str] = None
