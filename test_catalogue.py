@@ -234,6 +234,56 @@ def test_record_is_deterministic():
     print("  ok  build_record is deterministic")
 
 
+def test_selection_keeps_every_category():
+    """Regression: the final cut used raw votes, which erased documentaries
+    entirely — they carry far fewer votes than blockbusters regardless of
+    quality — and buried anything released in the last few years."""
+    from catalogue.build import _select, _selection_score
+
+    rows = []
+    # Blockbusters: huge votes, ordinary ratings. These used to take every slot.
+    for i in range(200):
+        rows.append({"title": f"Blockbuster {i}", "category": "MOVIE",
+                     "rating": 6.8, "votes": 900_000, "year_i": 2010})
+    # Documentaries: excellent, but two orders of magnitude fewer votes.
+    for i in range(50):
+        rows.append({"title": f"Doc {i}", "category": "DOCUMENTARY",
+                     "rating": 8.4, "votes": 4_000, "year_i": 2015})
+    for i in range(50):
+        rows.append({"title": f"Anime {i}", "category": "ANIME",
+                     "rating": 8.2, "votes": 30_000, "year_i": 2018})
+    for i in range(80):
+        rows.append({"title": f"Series {i}", "category": "TV",
+                     "rating": 7.9, "votes": 60_000, "year_i": 2019})
+
+    picked = _select(rows, 100)
+    cats = {}
+    for r in picked:
+        cats[r["category"]] = cats.get(r["category"], 0) + 1
+    assert len(picked) == 100, len(picked)
+    for c in ("MOVIE", "TV", "ANIME", "DOCUMENTARY"):
+        assert cats.get(c, 0) > 0, f"{c} was wiped out: {cats}"
+    assert cats["DOCUMENTARY"] >= 7, cats
+    print(f"  ok  selection keeps every category: {cats}")
+
+
+def test_recent_good_titles_beat_older_equals():
+    """'Most recent too, if popular and good' — a new release has had less time
+    to accumulate votes, so without a recency term it always loses to its own
+    older equivalent."""
+    from catalogue.build import _selection_score, _THIS_YEAR
+
+    new = {"rating": 7.8, "votes": 40_000, "year_i": _THIS_YEAR}
+    old = {"rating": 7.8, "votes": 40_000, "year_i": 1998}
+    assert _selection_score(new) > _selection_score(old)
+
+    # But recency must not outrank real quality: a weak new film still loses.
+    weak_new = {"rating": 5.2, "votes": 3_000, "year_i": _THIS_YEAR}
+    strong_old = {"rating": 8.6, "votes": 500_000, "year_i": 1994}
+    assert _selection_score(strong_old) > _selection_score(weak_new)
+    print("  ok  recency lifts new titles without beating quality")
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

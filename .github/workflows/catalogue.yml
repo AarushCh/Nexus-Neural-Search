@@ -20,7 +20,7 @@ on:
       target:
         description: "How many titles to keep"
         required: true
-        default: "50000"
+        default: "100000"
       min_votes:
         description: "Minimum vote count (quality floor)"
         required: true
@@ -55,7 +55,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      TARGET: ${{ github.event.inputs.target || '50000' }}
+      TARGET: ${{ github.event.inputs.target || '100000' }}
       MIN_VOTES: ${{ github.event.inputs.min_votes || '8' }}
       STAGES: ${{ github.event.inputs.stages || 'normalise-index' }}
 

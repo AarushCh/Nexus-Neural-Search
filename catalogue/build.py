@@ -40,12 +40,14 @@ load_dotenv()
 
 from catalogue import enrich, tmdb                     # noqa: E402
 from catalogue.schema import build_record, dedupe_key, document, passes_quality, stable_id  # noqa: E402
+from backend.ranking import quality_prior                # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
 
+_THIS_YEAR = time.gmtime().tm_year
 DATA = Path(os.getenv("CATALOGUE_DIR", "data"))
 IDS_FILE = DATA / "ids.jsonl"
 RAW_FILE = DATA / "raw.jsonl.gz"
@@ -206,7 +208,7 @@ def stage_normalise() -> None:
             if k not in best or rec["votes"] > best[k]["votes"]:
                 best[k] = rec
 
-    rows = sorted(best.values(), key=lambda r: r["votes"], reverse=True)[:TARGET]
+    rows = _select(list(best.values()), TARGET)
     kept = len(rows)
     with CATALOGUE_FILE.open("w", encoding="utf-8") as out:
         for r in rows:
@@ -216,6 +218,59 @@ def stage_normalise() -> None:
     print("   dropped: " + ", ".join(f"{v} {k}" for k, v in
                                      sorted(dropped.items(), key=lambda t: -t[1])))
     _report(rows)
+
+
+# Share of the catalogue each bucket is guaranteed before the global fill.
+# Ranking the whole pool on raw votes erases documentaries — they carry an order
+# of magnitude fewer votes than a blockbuster, not an order of magnitude less
+# worth — and a floor is the only thing that keeps the four categories browsable.
+QUOTAS = {"MOVIE": 0.45, "TV": 0.22, "ANIME": 0.12, "DOCUMENTARY": 0.07}
+
+RECENT_YEARS = 4         # how long a title counts as "new"
+RECENCY_BOOST = 0.35     # peak multiplier for this year's releases
+
+
+def _selection_score(r: dict) -> float:
+    """How much this title deserves a slot.
+
+    Votes alone are a popularity contest with a 20-year head start: a 2008
+    blockbuster outvotes a better 2025 film purely by having existed longer.
+    quality_prior already balances "is it good" against "is it actually
+    watched", and the recency term pays back the time a new release has not
+    had yet.
+    """
+    s = quality_prior(float(r.get("rating") or 0), float(r.get("votes") or 0))
+    year = int(r.get("year_i") or 0)
+    if not year:
+        return s
+    age = _THIS_YEAR - year
+    if 0 <= age <= RECENT_YEARS:
+        s *= 1.0 + RECENCY_BOOST * (RECENT_YEARS - age + 1) / (RECENT_YEARS + 1)
+    return s
+
+
+def _select(rows: list, target: int) -> list:
+    """Best `target` titles, with every category represented.
+
+    Two passes: fill each bucket's floor from that bucket's best, then fill
+    whatever is left from the global ranking. A bucket short of its quota
+    simply leaves its slots to the global pass.
+    """
+    scored = sorted(rows, key=_selection_score, reverse=True)
+    quota = {c: int(target * share) for c, share in QUOTAS.items()}
+    picked, taken, count = [], set(), {}
+    for r in scored:
+        c = r.get("category")
+        if count.get(c, 0) < quota.get(c, 0):
+            picked.append(r)
+            taken.add(id(r))
+            count[c] = count.get(c, 0) + 1
+    for r in scored:
+        if len(picked) >= target:
+            break
+        if id(r) not in taken:
+            picked.append(r)
+    return sorted(picked, key=_selection_score, reverse=True)[:target]
 
 
 def _report(rows: list) -> None:
