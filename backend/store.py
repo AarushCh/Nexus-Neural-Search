@@ -517,24 +517,46 @@ def neighbours(positive_ids: list, negative_ids: list = None, limit: int = 12,
 
     # AVG() is defined for `vector`, so average in that type and cast back —
     # works identically whether the column is vector or halfvec.
+    #
+    # The centroid is resolved FIRST, in its own round trip, instead of being
+    # joined in as a CTE column. HNSW can only serve `column <=> constant`, so
+    # ordering by an expression over a joined value fell back to a sequential
+    # scan of every vector in the catalogue — 2.3s per /similar at 50k titles,
+    # and it grows with the catalogue. As a bound literal the index is usable.
     vt = vector_type()
-    sql = f"""
-    WITH centroid AS (
-        SELECT AVG(embedding::vector)::{vt} AS v FROM media WHERE id = ANY(:pos)
-    ),
-    away AS (
-        SELECT AVG(embedding::vector)::{vt} AS v FROM media WHERE id = ANY(:neg)
-    )
-    SELECT {CARD_COLUMNS},
-           1 - (m.embedding <=> centroid.v) AS _cosine
-    FROM media m, centroid
-    LEFT JOIN away ON TRUE
-    {_where(filter_sql, "m.embedding IS NOT NULL AND NOT (m.id = ANY(:excl))")}
-    ORDER BY (m.embedding <=> centroid.v)
-             - COALESCE(0.35 * (m.embedding <=> away.v), 0) ASC
-    LIMIT :lim
-    """
     with engine.connect() as cx:
+        p["cvec"] = cx.execute(text(
+            "SELECT AVG(embedding::vector)::text FROM media WHERE id = ANY(:pos)"),
+            {"pos": positive_ids}).scalar()
+        if not p["cvec"]:
+            return []
+        p["avec"] = None
+        if negative_ids:
+            p["avec"] = cx.execute(text(
+                "SELECT AVG(embedding::vector)::text FROM media WHERE id = ANY(:neg)"),
+                {"neg": negative_ids}).scalar()
+
+        centroid = f"CAST(:cvec AS {vt}({VECTOR_SIZE}))"
+        if p["avec"]:
+            # Rocchio with negatives cannot use the index either way, because the
+            # sort key is a difference of two distances. Only taken when the user
+            # has actually dismissed something.
+            order = (f"(m.embedding <=> {centroid}) - "
+                     f"0.35 * (m.embedding <=> CAST(:avec AS {vt}({VECTOR_SIZE})))")
+        else:
+            order = f"m.embedding <=> {centroid}"
+
+        sql = f"""
+        SELECT {CARD_COLUMNS},
+               1 - (m.embedding <=> {centroid}) AS _cosine
+        FROM media m
+        {_where(filter_sql, "m.embedding IS NOT NULL AND NOT (m.id = ANY(:excl))")}
+        ORDER BY {order} ASC
+        LIMIT :lim
+        """
+        # There is always a WHERE here (the seed titles are excluded), and a
+        # filtered HNSW walk under-fills without this.
+        _tune_filtered_scan(cx)
         rows = cx.execute(text(sql), p).mappings().all()
     out = []
     for r in rows:
