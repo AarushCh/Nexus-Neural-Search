@@ -73,6 +73,29 @@ def test_score_cards_pins_exact_title_first():
     print("  ok  exact-title pin leads regardless of vector order")
 
 
+def test_badges_never_climb_down_the_list():
+    """Regression: ordering used the quality blend while the badge showed pure
+    relevance, so a well-known 61% outranked an obscure 63% and the grid
+    displayed badges that increased as you read downwards."""
+    cards = [{"id": "known", "title": "Known", "rating": 8.4, "votes": 900_000},
+             {"id": "obscure", "title": "Obscure", "rating": 6.0, "votes": 40}]
+    out = _score_cards("q", cards, {"known": 0.62, "obscure": 0.66})
+    scores = [c["score"] for c in out]
+    assert scores == sorted(scores, reverse=True), scores
+    assert out[0]["id"] == "obscure", "the better match must lead"
+    print(f"  ok  badges are monotonic down the list: {scores}")
+
+
+def test_quality_still_breaks_ties():
+    """Quality must keep deciding order among equally-matching titles."""
+    cards = [{"id": "obscure", "title": "O", "rating": 6.0, "votes": 40},
+             {"id": "known", "title": "K", "rating": 8.4, "votes": 900_000}]
+    out = _score_cards("q", cards, {"obscure": 0.70, "known": 0.70})
+    assert out[0]["id"] == "known", [c["id"] for c in out]
+    assert out[0]["score"] == out[1]["score"]
+    print("  ok  quality still orders equally-matching titles")
+
+
 def test_dedupe_key_keeps_remakes():
     """Catalogue dedupe keys on title+year so both Dunes survive."""
     assert dedupe_key("Dune", "1984") != dedupe_key("Dune", "2021")

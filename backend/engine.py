@@ -217,14 +217,22 @@ def _score_cards(query: str, cards: list[dict], cosines: dict = None,
             # Retrieved by the lexical channel only, so there is no cosine.
             rel = ranking.relevance_from_rrf(fused.get(cid, 0.0), ceiling)
         c["_rel"] = rel
+        c["_badge"] = ranking.match_percent(rel, c.get("_pin"))
         c["_order"] = ranking.blend_score(rel, _rating(c), c.get("votes", 0))
 
     # Title pins always lead: if you typed the name, that IS the answer.
+    #
+    # Then the BADGE, and only then the quality blend. Sorting on the blend
+    # alone let a well-known 61% sit above an obscure 63%, so the grid showed
+    # badges that climbed as you read down it and the ranking looked broken.
+    # Badges are whole numbers, so ties are common and the quality prior still
+    # decides the order inside each band — it just can never contradict the
+    # number on the card any more.
     cards.sort(key=lambda c: (c.get("_pin") == "exact", c.get("_pin") == "prefix",
-                              c["_order"]), reverse=True)
+                              c["_badge"], c["_order"]), reverse=True)
     for c in cards:
-        c["score"] = ranking.match_percent(c["_rel"], c.get("_pin"))
-        for k in ("_rel", "_order", "_pin", "_cos"):
+        c["score"] = c["_badge"]
+        for k in ("_rel", "_order", "_badge", "_pin", "_cos"):
             c.pop(k, None)
     return cards
 
