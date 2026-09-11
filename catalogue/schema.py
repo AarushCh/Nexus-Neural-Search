@@ -232,6 +232,14 @@ def _alt_titles(detail: dict) -> list:
         if t and t.lower() != primary and t.lower() not in seen:
             seen.add(t.lower())
             out.append(t)
+
+    # Order matters more than the cap does. TMDB lists long official variants
+    # first ("Attack on Titan: The Final Season - The Final Chapters Special
+    # Part 2"), so a naive truncation kept seven restatements of the primary
+    # title and dropped "AOT" — the one string people actually type. Rank the
+    # distinct short forms first: not a prefix of the primary title, then
+    # shortest.
+    out.sort(key=lambda t: (t.lower().startswith(primary), len(t)))
     return out[:8]
 
 

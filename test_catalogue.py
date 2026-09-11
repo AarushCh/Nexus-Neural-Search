@@ -308,6 +308,31 @@ def test_adult_content_is_dropped_without_eating_mainstream_anime():
     print("  ok  adult gate drops porn, keeps mainstream anime")
 
 
+def test_alt_titles_rank_abbreviations_first():
+    """Regression: TMDB returns long official variants first, so the [:8] cut
+    kept seven restatements of the primary title and dropped "AOT" — the one
+    string a person would actually type into a search box."""
+    from catalogue.schema import build_record
+
+    detail = {
+        "id": 1429, "name": "Attack on Titan", "overview": "x" * 60,
+        "first_air_date": "2013-04-07", "vote_average": 8.6, "vote_count": 6000,
+        "alternative_titles": {"results": [
+            {"iso_3166_1": "US", "title": "Attack on Titan: The Final Season"},
+            {"iso_3166_1": "US", "title": "Attack on Titan: The Final Chapters Part 2"},
+            {"iso_3166_1": "US", "title": "Attack on Titan: No Regrets"},
+            {"iso_3166_1": "US", "title": "Attack on Titan: Lost Girls"},
+            {"iso_3166_1": "US", "title": "Attack on Titan: Shingeki no Kyojin"},
+            {"iso_3166_1": "US", "title": "Attack on Titan: The Final Season Part 3"},
+            {"iso_3166_1": "US", "title": "Attack on Titan: Chronicle"},
+            {"iso_3166_1": "US", "title": "AOT"},
+        ]},
+    }
+    rec = build_record("tv", detail)
+    assert rec["alt_titles"][0] == "AOT", rec["alt_titles"]
+    print("  ok  alt titles put the abbreviation first")
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
