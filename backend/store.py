@@ -205,11 +205,29 @@ def create_schema() -> None:
                 cx.execute(text(stmt))
 
 
-def create_indexes() -> None:
+def create_indexes(concurrently: bool = True) -> None:
     """Built AFTER the bulk load — inserting into an existing HNSW index is far
-    slower than loading first and indexing once."""
-    with engine.begin() as cx:
+    slower than loading first and indexing once.
+
+    CONCURRENTLY by default, because a rebuild runs against the LIVE catalogue:
+    a plain CREATE INDEX takes an ACCESS EXCLUSIVE lock and would block every
+    read on `media` for as long as the build takes — minutes, on a six-figure
+    table. It cannot run inside a transaction, hence AUTOCOMMIT. A concurrent
+    build can fail and leave an invalid index behind, so each one falls back to
+    a plain build rather than leaving the index missing entirely.
+    """
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as cx:
         for stmt in _index_sql():
+            if concurrently:
+                try:
+                    cx.execute(text(stmt.replace("CREATE INDEX IF NOT EXISTS",
+                                                 "CREATE INDEX CONCURRENTLY IF NOT EXISTS", 1)))
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    print(f"   concurrent build failed ({type(e).__name__}), "
+                          f"retrying with a lock: {stmt.split(' ON ')[0][-28:]}")
+                    cx.execute(text("DROP INDEX IF EXISTS "
+                                    + stmt.split("IF NOT EXISTS")[1].split(" ON ")[0].strip()))
             cx.execute(text(stmt))
 
 
