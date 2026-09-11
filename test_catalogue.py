@@ -238,7 +238,7 @@ def test_selection_keeps_every_category():
     """Regression: the final cut used raw votes, which erased documentaries
     entirely — they carry far fewer votes than blockbusters regardless of
     quality — and buried anything released in the last few years."""
-    from catalogue.build import _select, _selection_score
+    from catalogue.build import _select
 
     rows = []
     # Blockbusters: huge votes, ordinary ratings. These used to take every slot.

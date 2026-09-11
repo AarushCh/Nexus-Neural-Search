@@ -321,12 +321,12 @@ def _report(rows: list) -> None:
         if r.get("providers"):
             providers += 1
     n = len(rows)
-    print(f"\n   categories: " + "  ".join(f"{k} {v}" for k, v in sorted(cats.items())))
+    print("\n   categories: " + "  ".join(f"{k} {v}" for k, v in sorted(cats.items())))
     print(f"   tags:       {tag_total / n:.1f} avg, {tagged * 100 // n}% have 5+")
     print(f"   anilist:    {anime_tagged} matched")
     print(f"   trailers:   {trailers * 100 // n}%")
     print(f"   providers:  {providers * 100 // n}%")
-    print(f"   posters:    100% (quality gate rejects anything without one)")
+    print("   posters:    100% (quality gate rejects anything without one)")
 
 
 # --- Stage 4: index -----------------------------------------------------------
