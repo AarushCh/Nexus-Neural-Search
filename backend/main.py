@@ -414,6 +414,12 @@ def surprise_me():
 def add_wishlist(mid: str, u=Depends(get_current_user_db), db: Session = Depends(get_db)):
     if mid.startswith("ai-"):
         raise HTTPException(status_code=400, detail="Cannot save AI items.")
+    # Saving an id that is not in the catalogue used to return 200 and write a
+    # row that can never resolve, so the title silently vanished from the
+    # wishlist it was just added to. Refuse it instead of storing a dead
+    # reference.
+    if not get_detail(mid):
+        raise HTTPException(status_code=404, detail="No such title.")
     if not db.query(WishlistItem).filter_by(user_id=u.id, media_id=mid).first():
         db.add(WishlistItem(user_id=u.id, media_id=mid))
         db.commit()
