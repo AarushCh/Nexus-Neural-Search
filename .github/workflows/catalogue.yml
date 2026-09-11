@@ -112,6 +112,18 @@ jobs:
           python -m catalogue.build index \
             ${{ github.event.inputs.recreate == 'true' && '--recreate' || '' }}
 
+      # The database is the live dataset, but the cache that backs it evicts
+      # after a week of no hits. This leaves a downloadable copy on the run, so
+      # a rebuild never has to re-download 50k titles from scratch.
+      - name: Publish the dataset
+        if: always() && hashFiles('data/catalogue.jsonl') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalogue
+          path: data/catalogue.jsonl
+          compression-level: 9
+          retention-days: 90
+
       - name: Verify the live catalogue
         run: |
           python - <<'PY'
