@@ -47,12 +47,23 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # GitHub caps a job at 6 hours. A 50k build took 3h31m end to end, so a
+    # 100k one does not comfortably fit in a single run — but `data/` is cached
+    # with restore-keys and every stage is resumable, so a run that times out
+    # loses nothing: dispatch again and it continues. To split it deliberately,
+    # run with stages "ids-fetch" first and then "normalise-index".
     timeout-minutes: 350
     env:
       # Actions gives the job a pipe, not a tty, so Python block-buffers
       # stdout and the 4 KB buffer swallows every progress line until the
       # stage ends. A long fetch then looks identical to a hang.
       PYTHONUNBUFFERED: "1"
+      # The API defaults this to 1 because ONNX gives every thread its own
+      # memory arena and Render's free instance has 512 MB. A CI runner has
+      # several cores and gigabytes, and embedding the catalogue is the slowest
+      # stage by far, so let it use them — single-threaded embedding of 100k
+      # documents would roughly double the longest job in the build.
+      ONNX_THREADS: "4"
       TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       TARGET: ${{ github.event.inputs.target || '100000' }}
