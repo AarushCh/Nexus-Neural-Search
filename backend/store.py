@@ -365,9 +365,17 @@ def hybrid_candidates(query: str, embedding: list, limit: int = 60,
     ),
     hits AS (
         SELECT id FROM dense UNION SELECT id FROM lexical
+    ),
+    -- How many documents match this query at ALL. A tiny number means the query
+    -- is distinctive ("ghibli"), which is evidence a cosine cannot express.
+    -- One aggregate over the GIN index, same value repeated on every row.
+    lexcount AS (
+        SELECT count(*) AS n FROM media m, q
+        {_where(filter_sql, "m.tsv @@ q.tsq")}
     )
     SELECT {CARD_COLUMNS},
-           d.cosine AS _cosine, d.rnk AS _dense_rank, l.rnk AS _lex_rank
+           d.cosine AS _cosine, d.rnk AS _dense_rank, l.rnk AS _lex_rank,
+           (SELECT n FROM lexcount) AS _lex_total
     FROM media m
     JOIN hits USING (id)
     LEFT JOIN dense d USING (id)
@@ -380,7 +388,9 @@ def hybrid_candidates(query: str, embedding: list, limit: int = 60,
         rows = cx.execute(text(sql), params).mappings().all()
 
     cards, cosines, dense, lexical = {}, {}, [], []
+    lex_total = 0
     for r in rows:
+        lex_total = int(r["_lex_total"] or 0)
         cid = r["id"]
         cards[cid] = _card({k: v for k, v in r.items() if not k.startswith("_")})
         if r["_cosine"] is not None:
@@ -391,7 +401,7 @@ def hybrid_candidates(query: str, embedding: list, limit: int = 60,
             lexical.append((int(r["_lex_rank"]), cid))
     dense.sort()
     lexical.sort()
-    return {"cards": cards, "cosines": cosines,
+    return {"cards": cards, "cosines": cosines, "lex_total": lex_total,
             "dense": [c for _, c in dense], "lexical": [c for _, c in lexical]}
 
 

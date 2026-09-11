@@ -272,6 +272,26 @@ def test_end_to_end_badges_are_honest():
     print(f"  ok  honest badges: strong={strong_pool} weak={weak_pool}")
 
 
+def test_rarity_only_lifts_distinctive_queries():
+    """A lexical hit on a query that only ~30 documents match anywhere in the
+    catalogue is strong evidence; one on a query matching thousands is not.
+    Regression for "Studio Ghibli", where every Ghibli film matched lexically
+    but Spirited Away still ranked 26th on cosine alone."""
+    from backend.ranking import rarity_relevance
+
+    # Distinctive query: top lexical hit should beat a mediocre cosine.
+    assert rarity_relevance(30, 1) > relevance_from_cosine(0.62), rarity_relevance(30, 1)
+    # Common query: no lift at all, so ordinary searches are untouched.
+    assert rarity_relevance(5000, 1) == 0.0
+    assert rarity_relevance(1500, 1) == 0.0
+    # Monotone in rarity and in rank.
+    assert rarity_relevance(30, 1) > rarity_relevance(300, 1)
+    assert rarity_relevance(30, 1) > rarity_relevance(30, 12)
+    # Degenerate inputs are safe.
+    assert rarity_relevance(0, 1) == 0.0 and rarity_relevance(30, 0) == 0.0
+    print("  ok  rarity lifts only distinctive queries")
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

@@ -283,6 +283,34 @@ def blend_score(relevance: float, rating: float, votes: float,
     return math.exp(math.log(rel) + qw * math.log(q))
 
 
+# A lexical hit on a RARE query is strong content evidence that the dense model
+# cannot express. "Studio Ghibli" matched ~30 documents in 50k, every one of
+# them a Ghibli film — yet Spirited Away ranked 26th, because its cosine against
+# a two-word studio name is unremarkable. Corpus rarity is measured exactly by
+# Postgres (how many documents match the tsquery at all), so this is a counted
+# statistic rather than a tuned guess.
+RARE_FLOOR = _f("RARE_FLOOR", 10.0)     # at or below this, maximally distinctive
+RARE_CEIL = _f("RARE_CEIL", 1500.0)     # at or above this, an ordinary word
+LEX_MAX_RELEVANCE = _f("LEX_MAX_RELEVANCE", 0.88)
+LEX_RANK_DECAY = _f("LEX_RANK_DECAY", 0.08)
+
+
+def rarity_relevance(lex_total: float, lex_rank: float) -> float:
+    """Relevance implied by matching a rare query lexically.
+
+    Returns 0 for common queries, so an ordinary descriptive search is
+    untouched and only distinctive ones — studios, franchises, proper nouns —
+    get lifted.
+    """
+    n, rank = _num(lex_total), _num(lex_rank)
+    if n <= 0 or rank <= 0 or n >= RARE_CEIL:
+        return 0.0
+    n = max(n, RARE_FLOOR)
+    rarity = math.log(RARE_CEIL / n) / math.log(RARE_CEIL / RARE_FLOOR)
+    decay = 1.0 / (1.0 + LEX_RANK_DECAY * (rank - 1.0))
+    return max(0.0, min(1.0, rarity)) * decay * LEX_MAX_RELEVANCE
+
+
 def match_percent(relevance: float, pin: str = None) -> int:
     """The 0–99 %MATCH badge.
 

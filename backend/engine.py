@@ -193,7 +193,8 @@ def rerank_order(query: str, cards: list[dict]) -> list[str] | None:
 
 
 def _score_cards(query: str, cards: list[dict], cosines: dict = None,
-                 fused: dict = None, ceiling: float = 1.0) -> list[dict]:
+                 fused: dict = None, ceiling: float = 1.0,
+                 lex_ranks: dict = None, lex_total: int = 0) -> list[dict]:
     """Set the %MATCH badge and the final order.
 
     The badge comes from the calibrated dense cosine — the one signal here that
@@ -208,6 +209,7 @@ def _score_cards(query: str, cards: list[dict], cosines: dict = None,
     if not cards:
         return []
     cosines, fused = cosines or {}, fused or {}
+    lex_ranks = lex_ranks or {}
 
     for c in cards:
         cid = str(c.get("id"))
@@ -216,6 +218,13 @@ def _score_cards(query: str, cards: list[dict], cosines: dict = None,
         else:
             # Retrieved by the lexical channel only, so there is no cosine.
             rel = ranking.relevance_from_rrf(fused.get(cid, 0.0), ceiling)
+        # Matching a query that only a handful of documents match at all is
+        # real content evidence, and the dense model has no way to show it:
+        # every Ghibli film matched "Studio Ghibli" lexically while Spirited
+        # Away's cosine left it 26th. Only ever raises, and only for queries
+        # rare enough to mean something.
+        if cid in lex_ranks:
+            rel = max(rel, ranking.rarity_relevance(lex_total, lex_ranks[cid]))
         c["_rel"] = rel
         c["_badge"] = ranking.match_percent(rel, c.get("_pin"))
         c["_order"] = ranking.blend_score(rel, _rating(c), c.get("votes", 0))
@@ -309,7 +318,9 @@ def hybrid_search(text: str, top_k: int = 12, prefetch: int = None,
                        key=lambda c: (c.get("_pin") is not None,
                                       fused.get(str(c.get("id")), 0.0)),
                        reverse=True)[:top_k]
-    return _score_cards(text, survivors, res["cosines"], fused, ceiling)
+    lex_ranks = {cid: i + 1 for i, cid in enumerate(res.get("lexical") or [])}
+    return _score_cards(text, survivors, res["cosines"], fused, ceiling,
+                        lex_ranks, res.get("lex_total", 0))
 
 
 def recommend(positive_ids: list, negative_ids: list = None, top_k: int = 12,
