@@ -20,8 +20,15 @@ jobs:
       - name: Ping health endpoint
         run: |
           URL="${{ vars.API_URL || 'https://nexus-neural-search.onrender.com' }}"
+          # /ping every run: it keeps the web service resident without touching
+          # Postgres, so a serverless database can still scale to zero instead
+          # of billing compute hours around the clock for nobody. Once an hour,
+          # hit "/" instead, which does check the index and 503s when it is
+          # empty — the thing actually worth failing loudly over.
+          if [ "$(date -u +%M)" -lt 5 ]; then PROBE="/"; else PROBE="/ping"; fi
+          echo "probing $PROBE"
           # Generous max-time: a cold start legitimately takes ~40s.
-          code=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 120 "$URL/")
+          code=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 120 "$URL$PROBE")
           echo "HTTP $code"
           cat /tmp/body
           echo

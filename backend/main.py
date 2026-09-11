@@ -138,6 +138,24 @@ class InteractionRequest(BaseModel):
 
 # --- Health / Auth ------------------------------------------------------------
 
+@app.get("/ping")
+@app.head("/ping")
+def ping():
+    """Liveness only — deliberately touches nothing.
+
+    The keepalive runs every 5 minutes to stop Render's free instance spinning
+    down. Pointing it at "/" also ran a query every 5 minutes, which prevents a
+    serverless Postgres from ever scaling to zero and burns compute hours around
+    the clock for a database nobody is using. This keeps the web service warm
+    and lets the database sleep; the keepalive still checks "/" hourly, so an
+    empty or unreachable index is still caught.
+
+    HEAD as well as GET: uptime monitors default to HEAD, and FastAPI registers
+    only GET for @app.get, which is why Render's own HEAD probe logged a 405.
+    """
+    return {"status": "awake"}
+
+
 @app.get("/")
 def health_check():
     """Reports what is ACTUALLY running, and 503s when the index is empty.
