@@ -52,7 +52,11 @@ QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
 # loaded for the dense model — instead of torch + sentence-transformers. That
 # was the only reason reranking had to be disabled in production, so it is now
 # ON by default and the README's claim about it is finally true.
-ENABLE_RERANK = os.getenv("ENABLE_RERANK", "true").lower() == "true"
+# Off by default: the cross-encoder costs a measured 106 MB on top of the
+# dense model's 186 MB, which does not fit a 512 MB instance alongside the
+# app. Turn it on where there is 1 GB or more — it is a rank channel only,
+# so its absence costs ordering quality, not correctness.
+ENABLE_RERANK = os.getenv("ENABLE_RERANK", "false").lower() == "true"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free")
@@ -77,6 +81,14 @@ class EngineUnavailable(RuntimeError):
     """
 
 
+# ONNX Runtime defaults to one intra-op thread per reported core, and each one
+# takes its own slice of a CPU arena that grows but never shrinks. A small
+# container reports the host's core count, so the default quietly multiplies
+# resident memory and the worker gets OOM-killed mid-request. Measured on one
+# core: dense 186 MB, cross-encoder a further 106 MB.
+ONNX_THREADS = int(os.getenv("ONNX_THREADS", "1"))
+
+
 # --- Lazy singletons ----------------------------------------------------------
 
 _lock = threading.Lock()
@@ -92,7 +104,7 @@ def _get_dense():
             if _dense_model is None:
                 from fastembed import TextEmbedding
 
-                _dense_model = TextEmbedding(DENSE_MODEL)
+                _dense_model = TextEmbedding(DENSE_MODEL, threads=ONNX_THREADS)
     return _dense_model
 
 
@@ -105,7 +117,8 @@ def _get_cross_encoder():
                 try:
                     from fastembed.rerank.cross_encoder import TextCrossEncoder
 
-                    _cross_encoder = TextCrossEncoder(model_name=RERANK_MODEL)
+                    _cross_encoder = TextCrossEncoder(model_name=RERANK_MODEL,
+                                                      threads=ONNX_THREADS)
                 except Exception as e:  # noqa: BLE001 - reranker stays optional
                     print(f"⚠️  Cross-encoder unavailable, using cosine relevance: {e}")
                     _cross_encoder_failed = True
