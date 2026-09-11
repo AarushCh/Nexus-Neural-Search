@@ -1129,6 +1129,22 @@ input:checked+.slider .moon {
     display: none !important;
 }
 
+/* The toast is centred with transform: translateX(-50%), and an animation that
+   sets `transform` replaces that whole value — so a shared fadeIn would drop the
+   centring for its full duration and the toast would slide in off to the right,
+   then snap to the middle as the animation ended. Keep the -50% in every frame. */
+@keyframes toastIn {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(20px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+}
+
 @keyframes fadeIn {
     from {
         opacity: 0;
@@ -1308,7 +1324,7 @@ html.light-mode ::-webkit-scrollbar-thumb:hover {
     position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);
     background: var(--bg-modal); border:1px solid var(--neon-blue); color: var(--text-primary);
     padding: 12px 22px; border-radius: 10px; font-family:'Rajdhani'; font-weight:700; z-index: 4000;
-    box-shadow: 0 0 25px rgba(0,243,255,.25); animation: fadeIn .3s ease;
+    box-shadow: 0 0 25px rgba(0,243,255,.25); animation: toastIn .3s ease;
 }
 
 /* --- Feed carousel (paginated 6-per-row grid with arrows + slide) --- */

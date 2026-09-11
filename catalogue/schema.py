@@ -44,12 +44,26 @@ MIN_OVERVIEW = 40        # characters; below this the embedding has nothing to l
 MIN_VOTES = 8            # some evidence a real audience exists
 MIN_RUNTIME = 5          # minutes; filters trailers and clips mis-filed as films
 
+# Tag slugs that mark a title as adult. TMDB's `adult` boolean is unreliable
+# for animation, so enumerating the anime slice directly surfaces hentai next
+# to Doraemon. Mainstream erotic thrillers are not at risk here: Basic Instinct
+# carries no TMDB keywords at all, so it cannot trip this.
+# Unambiguous markers only. "ecchi" and "erotic" are NOT here: both sit on
+# Mushoku Tensei, a mainstream hit, so either as a sole disqualifier throws away
+# top-tier anime. Precision over recall — a wrongly dropped favourite is a worse
+# failure for a discovery engine than a borderline title that slipped through.
+ADULT_TAGS = {"theme:hentai", "theme:softcore", "theme:animated-porn",
+              "theme:pornography", "theme:porn", "theme:sexploitation",
+              "theme:adult-video"}
+
 
 def passes_quality(rec: dict, min_votes: int = MIN_VOTES) -> tuple[bool, str]:
     """(ok, reason). The reason is kept so the build can report WHY it dropped
     things — a silent filter is impossible to tune."""
     if not rec.get("title"):
         return False, "no title"
+    if ADULT_TAGS & set(rec.get("tags") or ()):
+        return False, "adult content"
     if not rec.get("image"):
         return False, "no poster meeting quality bar"
     if len(rec.get("description") or "") < MIN_OVERVIEW:

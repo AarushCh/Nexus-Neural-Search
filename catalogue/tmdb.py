@@ -139,6 +139,30 @@ def iter_export_ids(kind: str, min_popularity: float = 0.0) -> Iterator[dict]:
     raise RuntimeError(f"Could not download the TMDB {kind} id export (tried 5 days).")
 
 
+def iter_discover_ids(kind: str, params: dict, max_pages: int = 500) -> Iterator[dict]:
+    """Popularity-ranked ids for one slice of the catalogue, via /discover.
+
+    The daily export stays the primary source because /discover refuses to page
+    past 500. But the export carries only an id and a global popularity number,
+    so ranking it picks the world's most popular titles and a niche worth
+    covering deliberately — anime — never surfaces beyond its few breakouts.
+    Asking /discover for that slice directly reaches ~10k of it in rank order.
+    """
+    page = 1
+    while page <= max_pages:
+        data = get(f"discover/{kind}",
+                   {**params, "page": page, "sort_by": "popularity.desc",
+                    "include_adult": "false"})
+        results = (data or {}).get("results") or []
+        if not results:
+            return
+        for row in results:
+            yield row
+        if page >= int((data or {}).get("total_pages") or 1):
+            return
+        page += 1
+
+
 def fetch_detail(kind: str, tmdb_id: int) -> dict | None:
     """Full record for one title, with every append we need, in one request."""
     return get(

@@ -284,6 +284,30 @@ def test_recent_good_titles_beat_older_equals():
     print("  ok  recency lifts new titles without beating quality")
 
 
+def test_adult_content_is_dropped_without_eating_mainstream_anime():
+    """Enumerating the anime slice from /discover surfaces hentai next to
+    Doraemon, and TMDB's `adult` flag does not catch it. The gate keys on
+    unambiguous tags only: `ecchi`/`erotic` sit on Mushoku Tensei, a mainstream
+    hit, so treating either as a disqualifier would throw away top-tier anime.
+    """
+    from catalogue.schema import passes_quality
+
+    base = {"title": "T", "image": "http://x/p.jpg", "year": "2020",
+            "votes": 5000, "description": "x" * 60, "types": ["series"]}
+
+    porn = dict(base, tags=["genre:animation", "theme:hentai", "theme:ecchi"])
+    ok, why = passes_quality(porn)
+    assert not ok and why == "adult content", (ok, why)
+
+    fan_service = dict(base, tags=["genre:animation", "theme:ecchi", "theme:erotic"])
+    ok, why = passes_quality(fan_service)
+    assert ok, f"mainstream anime wrongly dropped: {why}"
+
+    clean = dict(base, tags=["genre:animation", "theme:friendship"])
+    assert passes_quality(clean)[0]
+    print("  ok  adult gate drops porn, keeps mainstream anime")
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

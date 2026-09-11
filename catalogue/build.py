@@ -91,6 +91,30 @@ def stage_ids() -> None:
         rows += got[:want]
         print(f"   {kind}: {len(got)} above popularity {min_pop}, keeping {min(want, len(got))}")
 
+    # Anime is ~7% of a popularity-ranked catalogue but a headline category
+    # here, and global popularity buries everything past its few breakouts. Ask
+    # TMDB for the slice directly, so the pool actually contains enough of it
+    # for the quota in `normalise` to have something to choose from.
+    seen = {(r["kind"], r["id"]) for r in rows}
+    want_anime = int(TARGET * ANIME_SHARE)
+    added = 0
+    for kind in ("tv", "movie"):
+        if added >= want_anime:
+            break
+        print(f"-> Enumerating Japanese animation ({kind})...")
+        for row in tmdb.iter_discover_ids(
+                kind, {"with_genres": 16, "with_original_language": "ja"}):
+            key = (kind, row["id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({"kind": kind, "id": row["id"],
+                         "pop": float(row.get("popularity") or 0)})
+            added += 1
+            if added >= want_anime:
+                break
+    print(f"   +{added} anime candidates beyond the popularity slice")
+
     with IDS_FILE.open("w", encoding="utf-8") as f:
         for r in rows:
             f.write(json.dumps(r) + "\n")
@@ -225,6 +249,10 @@ def stage_normalise() -> None:
 # of magnitude fewer votes than a blockbuster, not an order of magnitude less
 # worth — and a floor is the only thing that keeps the four categories browsable.
 QUOTAS = {"MOVIE": 0.45, "TV": 0.22, "ANIME": 0.12, "DOCUMENTARY": 0.07}
+
+# Anime enumerated directly from /discover, as a share of TARGET. The quota
+# above can only choose from what the ids stage actually collected.
+ANIME_SHARE = float(os.getenv("ANIME_SHARE", "0.18"))
 
 RECENT_YEARS = 4         # how long a title counts as "new"
 RECENCY_BOOST = 0.35     # peak multiplier for this year's releases
