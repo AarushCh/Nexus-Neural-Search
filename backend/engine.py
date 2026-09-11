@@ -319,8 +319,15 @@ def hybrid_search(text: str, top_k: int = 12, prefetch: int = None,
                                       fused.get(str(c.get("id")), 0.0)),
                        reverse=True)[:top_k]
     lex_ranks = {cid: i + 1 for i, cid in enumerate(res.get("lexical") or [])}
+    # Rarity is only evidence of DISTINCTIVENESS for a short query. Every term
+    # is ANDed into the tsquery, so a six-word sentence matches few documents
+    # purely by being long — "something to watch with my parents" matched a
+    # handful and shot Silver Linings Playbook to 92%. Two words that match
+    # thirty documents mean something; six words that do not.
+    content_words = [w for w in re.findall(r"\w+", text) if len(w) > 2]
+    lex_total = res.get("lex_total", 0) if len(content_words) <= 3 else 0
     return _score_cards(text, survivors, res["cosines"], fused, ceiling,
-                        lex_ranks, res.get("lex_total", 0))
+                        lex_ranks, lex_total)
 
 
 def recommend(positive_ids: list, negative_ids: list = None, top_k: int = 12,
