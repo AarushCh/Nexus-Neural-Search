@@ -292,7 +292,12 @@ def blend_score(relevance: float, rating: float, votes: float,
 RARE_FLOOR = _f("RARE_FLOOR", 10.0)     # at or below this, maximally distinctive
 RARE_CEIL = _f("RARE_CEIL", 1500.0)     # at or above this, an ordinary word
 LEX_MAX_RELEVANCE = _f("LEX_MAX_RELEVANCE", 0.88)
-LEX_RANK_DECAY = _f("LEX_RANK_DECAY", 0.08)
+# Gentle. Rarity is a property of the QUERY, so when only ~30 documents match
+# it at all, every one of them is probably relevant — position inside that small
+# set is weak information. A steep decay punished exactly the titles this is
+# meant to rescue: the Ghibli films mention "studio ghibli" once, while a
+# documentary about Ghibli repeats it and took the whole boost.
+LEX_RANK_DECAY = _f("LEX_RANK_DECAY", 0.03)
 
 
 def rarity_relevance(lex_total: float, lex_rank: float) -> float:

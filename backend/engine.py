@@ -323,9 +323,12 @@ def hybrid_search(text: str, top_k: int = 12, prefetch: int = None,
     # is ANDed into the tsquery, so a six-word sentence matches few documents
     # purely by being long — "something to watch with my parents" matched a
     # handful and shot Silver Linings Playbook to 92%. Two words that match
-    # thirty documents mean something; six words that do not.
+    # thirty documents mean something; six words that do not. Two words, not
+    # three: at three the gate still fired on "mind bending sci fi", and a
+    # one-or-two word query is almost always an entity — a studio, a franchise,
+    # a person — which is exactly the case the dense model is weakest on.
     content_words = [w for w in re.findall(r"\w+", text) if len(w) > 2]
-    lex_total = res.get("lex_total", 0) if len(content_words) <= 3 else 0
+    lex_total = res.get("lex_total", 0) if len(content_words) <= 2 else 0
     return _score_cards(text, survivors, res["cosines"], fused, ceiling,
                         lex_ranks, lex_total)
 
