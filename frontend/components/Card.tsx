@@ -17,7 +17,12 @@ export default function Card({
   showSimilar?: boolean;
 }) {
   const { isSaved, toggleWishlist, token, toast } = useStore();
-  const [saved, setSaved] = useState(isSaved(item.id));
+  // Read straight from the store rather than seeding local state at mount: the
+  // wishlist is fetched after login, so a card rendered before it arrived kept
+  // an empty heart for a title that was already saved. toggleWishlist already
+  // updates optimistically and reverts on failure, so there is nothing local
+  // left to track.
+  const saved = isSaved(item.id);
   const [src, setSrc] = useState(posterUrl(item.image, item.title));
 
   const ratingVal = parseFloat(String(item.rating));
@@ -27,8 +32,7 @@ export default function Card({
   const onHeart = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!token) return toast("Login to save titles");
-    const nowSaved = await toggleWishlist(item);
-    setSaved(nowSaved);
+    await toggleWishlist(item);
   };
 
   return (
@@ -41,9 +45,14 @@ export default function Card({
           onLoad={(e) => e.currentTarget.classList.add("loaded")}
           onError={() => setSrc(`https://placehold.co/300x450/111/FFF?text=${encodeURIComponent(item.title)}`)}
         />
-        <div className="match-bar-track">
-          <span className="match-label-base label-cyan">{item.score || 85}% MATCH</span>
-        </div>
+        {/* Only where a real relevance score exists. Feed, wishlist and random
+            cards carry none, and the old `item.score || 85` invented an 85%
+            match for every one of them. */}
+        {typeof item.score === "number" && item.score > 0 && (
+          <div className="match-bar-track">
+            <span className="match-label-base label-cyan">{item.score}% MATCH</span>
+          </div>
+        )}
       </div>
       <div className="card-content">
         <div className="badge-row">
