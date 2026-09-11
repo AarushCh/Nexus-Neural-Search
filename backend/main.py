@@ -151,12 +151,14 @@ def ping():
     empty or unreachable index is still caught.
 
     HEAD as well as GET: uptime monitors default to HEAD, and FastAPI registers
-    only GET for @app.get, which is why Render's own HEAD probe logged a 405.
+    only GET for @app.get, so a HEAD probe used to get a 405 ("HEAD / 405 Method
+    Not Allowed" in the deploy log). "/" accepts HEAD now too.
     """
     return {"status": "awake"}
 
 
 @app.get("/")
+@app.head("/")
 def health_check():
     """Reports what is ACTUALLY running, and 503s when the index is empty.
 
