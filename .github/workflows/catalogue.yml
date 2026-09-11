@@ -49,6 +49,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
+      # Actions gives the job a pipe, not a tty, so Python block-buffers
+      # stdout and the 4 KB buffer swallows every progress line until the
+      # stage ends. A long fetch then looks identical to a hang.
+      PYTHONUNBUFFERED: "1"
       TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       TARGET: ${{ github.event.inputs.target || '50000' }}
