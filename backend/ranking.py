@@ -81,14 +81,29 @@ MATCH_TEMP = _f("MATCH_TEMP", 1.8)
 
 # Cosine-similarity calibration for the dense channel.
 #
-# Embedding cosines do not span [0,1] in practice: bge-small puts unrelated
-# text around 0.55-0.68 and a strong topical match around 0.80-0.90. Reporting
-# the raw cosine as a percentage would tell a user that a totally unrelated film
-# is a "62% match". These two anchors linearly rescale the band that actually
-# carries signal. Re-measure them if DENSE_MODEL changes — they are model
-# specific, and `scripts/calibrate.py --cosine` prints fresh values.
-COSINE_FLOOR = _f("COSINE_FLOOR", 0.62)
-COSINE_CEIL = _f("COSINE_CEIL", 0.88)
+# Embedding cosines do not span [0,1], so the raw value cannot be shown as a
+# percentage — it would call unrelated text a "43% match". These anchors rescale
+# the band that actually carries signal.
+#
+# MEASURED, not guessed, over this catalogue's documents with bge-small
+# (10 labelled probe queries, 70 query-document pairs):
+#
+#              n     min     p25     median    max
+#   relevant   10   0.457   0.547    0.625    0.853
+#   irrelevant 60   0.319     -      0.433    0.599   (p90 = 0.504)
+#
+# The floor sits just above the irrelevant mass and the ceiling near the top of
+# the relevant mass. An earlier guess of 0.62/0.88 sat above the relevant MEDIAN,
+# which floored almost every badge at the minimum.
+#
+# These are specific to DENSE_MODEL and to the document template in
+# catalogue/schema.py. Re-measure if either changes.
+COSINE_FLOOR = _f("COSINE_FLOOR", 0.48)
+COSINE_CEIL = _f("COSINE_CEIL", 0.82)
+
+# Weight of the cross-encoder's ranking when fused with the retrieval channels.
+# It is fused as a RANK, never as a score — see relevance_from_logit.
+W_RERANK = _f("W_RERANK", 1.2)
 
 # Displayed %MATCH is clamped into this band. A floor above 0 avoids telling a
 # user a result is literally 0% when we chose to show it; the ceiling keeps 100%
@@ -192,7 +207,28 @@ def sigmoid(x: float) -> float:
 
 
 def relevance_from_logit(logit: float, temp: float = None) -> float:
-    """Cross-encoder logit -> 0–1 relevance probability."""
+    """Cross-encoder logit -> 0–1 relevance probability.
+
+    NOT used for the badge by default, and the measurement explains why. Over
+    the same 70 labelled pairs used to calibrate the cosine, ms-marco-MiniLM
+    produced:
+
+        relevant    median  -10.91   (min -11.33, max +9.54)
+        irrelevant  median  -11.33   (max -10.50)
+
+    The two distributions almost entirely overlap and both sit deep in the
+    negative tail, so sigmoid() maps essentially everything to ~0. The model is
+    trained to answer "does this passage answer this question", which is not the
+    question a catalogue asks, and its absolute output does not transfer.
+
+    Its ORDERING is still better than the vector order alone, so the reranker is
+    fused into `weighted_rrf` as a rank channel instead. Same lesson as
+    relevance_from_rrf: a good ranker is not automatically a relevance measure.
+
+    Kept because a reranker calibrated for this domain (or a differently trained
+    one) could legitimately feed the badge — set RERANK_SCORES_BADGE=true then,
+    after re-measuring.
+    """
     return sigmoid(_num(logit) / (MATCH_TEMP if temp is None else temp))
 
 

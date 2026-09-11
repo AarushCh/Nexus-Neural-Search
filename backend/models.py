@@ -63,19 +63,8 @@ class Interaction(Base):
     user = relationship("User", back_populates="interactions")
 
 
-class MediaDetail(Base):
-    """
-    Cache of TMDB enrichment (trailer / cast / streaming providers) per media_id,
-    so the detail view doesn't hit TMDB on every open.
-    """
-    __tablename__ = "media_details"
-
-    media_id = Column(String, primary_key=True, index=True)
-    tmdb_id = Column(Integer, nullable=True)
-    poster = Column(String, nullable=True)         # corrected TMDB poster (w500)
-    trailer_key = Column(String, nullable=True)   # YouTube key
-    cast_json = Column(Text, nullable=True)        # JSON list of {name, character, profile}
-    providers_json = Column(Text, nullable=True)   # JSON list of {name, logo}
-    backdrop = Column(String, nullable=True)
-    runtime = Column(Integer, nullable=True)
-    fetched_at = Column(DateTime, default=datetime.utcnow)
+# NOTE: the old `MediaDetail` cache table lived here. It existed because the
+# detail view had to hit TMDB live for cast/providers and needed somewhere to
+# memoise the result. The catalogue build now writes that data into
+# `media_extra` at build time, so the cache, the live lookup, and the poster
+# patching that went with it are all gone.

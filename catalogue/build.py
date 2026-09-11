@@ -249,79 +249,50 @@ def _report(rows: list) -> None:
 # --- Stage 4: index -----------------------------------------------------------
 
 def stage_index() -> None:
-    """Embed and upsert into Qdrant."""
+    """Embed and load into Postgres.
+
+    Indexes are built AFTER the bulk load: inserting 100k rows into an existing
+    HNSW index is several times slower than loading first and indexing once.
+    """
     if not CATALOGUE_FILE.exists():
         sys.exit("Run `python -m catalogue.build normalise` first.")
 
-    from qdrant_client import models
+    from backend import store
+    from backend.engine import embed_docs
 
-    from backend.engine import (COLLECTION_NAME, DENSE_VECTOR, SPARSE_VECTOR,
-                                VECTOR_SIZE, embed_docs, get_qdrant, sparse_docs)
+    rows = [json.loads(line) for line in CATALOGUE_FILE.open(encoding="utf-8")]
 
-    rows = [json.loads(l) for l in CATALOGUE_FILE.open(encoding="utf-8")]
-    client = get_qdrant()
+    if RECREATE:
+        print("🗑️  Dropping existing catalogue tables…")
+        store.drop_all()
+    store.create_schema()
+    print(f"🧮 Vector type: {store.vector_type()}")
 
-    exists = client.collection_exists(COLLECTION_NAME)
-    if RECREATE and exists:
-        client.delete_collection(COLLECTION_NAME)
-        exists = False
-    if not exists:
-        client.create_collection(
-            COLLECTION_NAME,
-            vectors_config={DENSE_VECTOR: models.VectorParams(
-                size=VECTOR_SIZE, distance=models.Distance.COSINE)},
-            sparse_vectors_config={SPARSE_VECTOR: models.SparseVectorParams(
-                modifier=models.Modifier.IDF)},
-            # Payloads live on disk, not in RAM.
-            #
-            # At 100k titles the payload (cast, crew, providers, tags, alt
-            # titles) is roughly 300-500MB, while the dense vectors are only
-            # ~150MB. Left in memory the payload is what exhausts a 1GB free
-            # tier — and it would do so partway through the upsert, leaving a
-            # half-built collection. Vectors stay resident so search is fast;
-            # payload is read from disk only for the results actually returned.
-            on_disk_payload=True,
-        )
-
-    # `title` must be lowercase-tokenised: the engine pins exact title matches by
-    # querying this index. `tags` is a keyword index so the new facets are
-    # filterable server-side.
-    for field, schema in [
-        ("title", models.TextIndexParams(type=models.TextIndexType.TEXT, lowercase=True)),
-        ("category", models.PayloadSchemaType.KEYWORD),
-        ("tags", models.PayloadSchemaType.KEYWORD),
-        ("genres", models.PayloadSchemaType.KEYWORD),
-        ("forms", models.PayloadSchemaType.KEYWORD),
-        ("types", models.PayloadSchemaType.KEYWORD),
-        ("rating_f", models.PayloadSchemaType.FLOAT),
-        ("year_i", models.PayloadSchemaType.INTEGER),
-        ("votes", models.PayloadSchemaType.INTEGER),
-    ]:
-        try:
-            client.create_payload_index(COLLECTION_NAME, field_name=field, field_schema=schema)
-        except Exception:  # already exists
-            pass
-
-    print(f"🔢 Embedding + upserting {len(rows)} titles…")
+    print(f"🔢 Embedding + loading {len(rows)} titles…")
     B, done = 256, 0
+    started = time.time()
     for start in range(0, len(rows), B):
         chunk = rows[start:start + B]
+        for rec in chunk:
+            rec["id"] = stable_id(rec["tmdb_kind"], rec["tmdb_id"])
         texts = [document(r) for r in chunk]
-        dense = embed_docs(texts)
-        sparse = sparse_docs(texts)
-        points = []
-        for rec, dv, sv in zip(chunk, dense, sparse):
-            payload = {k: v for k, v in rec.items() if k != "tag_weights"}
-            points.append(models.PointStruct(
-                id=stable_id(rec["tmdb_kind"], rec["tmdb_id"]),
-                vector={DENSE_VECTOR: dv, SPARSE_VECTOR: sv},
-                payload=payload,
-            ))
-        client.upsert(COLLECTION_NAME, points=points)
-        done += len(points)
+        store.upsert(chunk, texts, embed_docs(texts))
+        store.upsert_extra(chunk)
+        done += len(chunk)
         if done % 2560 == 0 or done == len(rows):
-            print(f"   {done}/{len(rows)}")
-    print(f"✅ Indexed {done} titles into '{COLLECTION_NAME}'.")
+            rate = done / max(time.time() - started, 1)
+            print(f"   {done}/{len(rows)}  ({rate:.0f}/s)")
+
+    print("🏗️  Building indexes (HNSW is the slow one)…")
+    store.create_indexes()
+    store.analyze()
+
+    rep = store.storage_report()
+    print(f"✅ Indexed {done} titles.")
+    print(f"   storage: {rep['total_mb']} MB total "
+          f"({rep['bytes_per_title'] / 1024:.1f} KB/title)")
+    if rep["reliable"]:
+        print(f"   projected at 100k: {rep['projected_100k_mb']:.0f} MB")
 
 
 STAGES = {"ids": stage_ids, "fetch": stage_fetch,

@@ -16,13 +16,41 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install
-        # Only what the pure-logic tests need; fastembed/torch are not exercised here.
-        run: pip install python-dotenv requests "qdrant-client>=1.16,<1.17"
+        # Only what the pure-logic tests need; the embedding models are not
+        # exercised here (test_store spins up a real Postgres instead).
+        run: pip install python-dotenv requests sqlalchemy psycopg2-binary
       - name: Regression tests
         run: |
           python test_ranking.py
           python test_catalogue.py
           python test_nexus.py
+
+  store:
+    # Real Postgres + pgvector, so the SQL is actually executed in CI rather
+    # than only on someone's laptop.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: nexus
+          POSTGRES_DB: nexus
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:nexus@localhost:5432/nexus
+      SECRET_KEY: ci-only-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install python-dotenv requests sqlalchemy psycopg2-binary
+      - name: Store integration tests
+        run: python test_store.py
 
   frontend:
     runs-on: ubuntu-latest

@@ -126,18 +126,24 @@ def test_rrf_cannot_express_absolute_relevance():
 
 
 def test_relevance_from_cosine_rejects_unrelated_text():
-    """Raw cosines never reach 0 for unrelated text — bge-small puts junk around
-    0.6, which would have read as a 60% match. Rescaling fixes that."""
-    unrelated = relevance_from_cosine(0.60)
-    weak = relevance_from_cosine(0.70)
-    strong = relevance_from_cosine(0.86)
+    """Raw cosines never reach 0 for unrelated text, so they cannot be shown as
+    a percentage directly.
+
+    The values below come from the measured distribution over this catalogue
+    (see COSINE_FLOOR in ranking.py): irrelevant pairs centre on 0.43 and reach
+    0.60 at the extreme; relevant pairs centre on 0.63 and reach 0.85.
+    """
+    unrelated = relevance_from_cosine(0.43)      # irrelevant median
+    borderline = relevance_from_cosine(0.55)     # in the overlap zone
+    typical = relevance_from_cosine(0.63)        # relevant median
+    strong = relevance_from_cosine(0.82)         # near the relevant max
     assert unrelated == 0.0, unrelated
-    assert 0.2 < weak < 0.45, weak
-    assert strong > 0.85, strong
-    assert relevance_from_cosine(0.99) == 1.0
-    assert unrelated < weak < strong
-    print(f"  ok  cosine calibration: 0.60->{unrelated:.2f} 0.70->{weak:.2f} "
-          f"0.86->{strong:.2f}")
+    assert 0.1 < borderline < 0.3, borderline
+    assert 0.35 < typical < 0.55, typical
+    assert strong >= 1.0 or strong > 0.95, strong
+    assert unrelated < borderline < typical < strong
+    print(f"  ok  cosine calibration: 0.43->{unrelated:.2f} 0.55->{borderline:.2f} "
+          f"0.63->{typical:.2f} 0.82->{strong:.2f}")
 
 
 def test_relevance_from_logit_is_calibrated():
@@ -257,10 +263,12 @@ def test_end_to_end_badges_are_honest():
 
     This is the whole point of the rewrite: the old rank-based badge gave the
     top result 99% no matter how bad the pool was."""
-    strong_pool = [match_percent(relevance_from_cosine(c)) for c in (0.87, 0.84, 0.80)]
-    weak_pool = [match_percent(relevance_from_cosine(c)) for c in (0.66, 0.64, 0.63)]
+    # Cosines from the measured distribution: a genuinely good pool vs one where
+    # nothing actually matches.
+    strong_pool = [match_percent(relevance_from_cosine(c)) for c in (0.85, 0.78, 0.72)]
+    weak_pool = [match_percent(relevance_from_cosine(c)) for c in (0.50, 0.45, 0.40)]
     assert min(strong_pool) > max(weak_pool), (strong_pool, weak_pool)
-    assert max(weak_pool) < 45, f"a hopeless query still looks good: {weak_pool}"
+    assert max(weak_pool) < 30, f"a hopeless query still looks good: {weak_pool}"
     print(f"  ok  honest badges: strong={strong_pool} weak={weak_pool}")
 
 

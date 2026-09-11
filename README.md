@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue?style=for-the-badge&logo=python)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi)](https://fastapi.tiangolo.com/)
 [![Next.js](https://img.shields.io/badge/Next.js-16-000000?style=for-the-badge&logo=nextdotjs)](https://nextjs.org/)
-[![Qdrant](https://img.shields.io/badge/Qdrant-Vector_DB-9cf?style=for-the-badge)](https://qdrant.tech/)
+[![pgvector](https://img.shields.io/badge/Postgres-pgvector-336791?style=for-the-badge&logo=postgresql)](https://github.com/pgvector/pgvector)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
 ---
@@ -16,34 +16,52 @@
 
 ## 📖 Overview
 
-Ask Nexus for *"cyberpunk anime about identity"* **or** an exact title like *"Cyberpunk: Edgerunners"* — it handles both. Every query runs **hybrid retrieval** (dense semantic vectors + BM25 keyword matching), fuses the two with Reciprocal Rank Fusion, and **reranks with a cross-encoder** for final accuracy. On top of that sits a full product: user accounts, a personalized home feed, wishlist/favourites, search history, view tracking, and flagship detail pages with trailers, cast, and where-to-watch.
+Ask Nexus for *"cyberpunk anime about identity"* **or** an exact title like *"Cyberpunk: Edgerunners"* — it handles both. Every query runs **hybrid retrieval** (dense vectors + Postgres full-text), fuses the two with Reciprocal Rank Fusion, and **reranks with a cross-encoder**. On top of that sits a full product: user accounts, a personalized home feed, wishlist/favourites, search history, view tracking, and flagship detail pages with trailers, cast, and where-to-watch.
 
-The catalogue targets **100,000+ titles**, built from TMDB's daily id exports and quality-gated on artwork, overview and vote count, then enriched with AniList's rank-weighted tags and IMDb ratings. Every card has a poster that passed a real resolution and aspect-ratio bar, so artwork is correct by construction and detail pages load instantly.
+The catalogue is built from TMDB's daily id exports and quality-gated on artwork, overview and vote count, then enriched with AniList's rank-weighted tags and IMDb ratings. Every card has a poster that passed a real resolution and aspect-ratio bar, so artwork is correct by construction and detail pages load instantly.
+
+**Everything lives in one PostgreSQL database** — the catalogue, the vectors, and the users. There is no separate vector service to provision, keep awake, or have deleted overnight.
 
 ---
 
 ## ✨ How retrieval works
 
-Every `internal` search:
+Every `internal` search runs as **one SQL query against one database**.
 
-1. **Dense embedding** — the query is embedded with `BAAI/bge-small-en-v1.5` (384-dim), the *same* model used for the corpus.
-2. **Sparse embedding** — a BM25 sparse vector (FastEmbed, IDF modifier) captures exact keyword/title hits.
-3. **Fusion** — dense and sparse are queried **separately** and fused with **weighted Reciprocal Rank Fusion** in `backend/ranking.py`. Qdrant's built-in RRF returns only a fused rank, which discards the dense cosine — and that cosine is the one absolute relevance signal available without a reranker. Doing it client-side also buys per-channel weights, which Qdrant's fusion does not expose.
-4. **Cross-encoder rerank** — `cross-encoder/ms-marco-MiniLM-L-6-v2` rescores the candidates. **Off by default** (`ENABLE_RERANK=false`): it needs `torch` + `sentence-transformers` (~600 MB) and OOMs on a 512 MB host. Turn it on wherever you have the RAM.
-5. **Title pinning** — token-set similarity, not string prefix, so `fellowship of the ring` and `star wars a new hope` resolve to the right title.
-6. **Ranking** — relevance is blended with a **vote-shrunk Bayesian quality prior** (the IMDb weighted-rating formula), log-linearly, so a popular title that *doesn't* match can never climb over one that does, while quality breaks ties between equally relevant results.
+1. **Dense channel** — the query is embedded with `BAAI/bge-small-en-v1.5` (384-dim, ONNX), and `pgvector` HNSW returns the nearest titles *with their cosines*.
+2. **Lexical channel** — Postgres `tsvector` + `ts_rank_cd` catches exact words the vectors miss: a director's name, a studio, an exact title. It brings stemming, so "haunting" matches "haunted".
+3. **Fusion** — the two rankings are fused with **weighted Reciprocal Rank Fusion** in `backend/ranking.py`, with per-channel weights.
+4. **Cross-encoder rerank** — `Xenova/ms-marco-MiniLM-L-6-v2` reranks the shortlist and its *ordering* joins the fusion as a third channel. It runs on the same ONNX runtime as the encoder, so unlike the old torch build it actually runs in production.
+5. **Title pinning** — token-set similarity **and** Postgres trigram similarity, so `fellowship of the ring` (partial) and `spirted away` (typo) both resolve.
+6. **Ranking** — relevance blended with a **vote-shrunk Bayesian quality prior** (the IMDb weighted-rating formula), log-linearly, so a popular title that *doesn't* match can never climb over one that does, while quality breaks ties.
 
 ### The %MATCH number
 
-The badge is a monotone function of genuine, content-based relevance — the cross-encoder logit when the reranker is on, the calibrated dense cosine otherwise — so **90% means the same strength of match in every query**.
+The badge is a monotone function of the **calibrated dense cosine**, so **90% means the same strength of match in every query**.
 
-It is deliberately *not* derived from list position or from RRF. A rank-based score is content-blind: rank 3 of a pool of masterpieces and rank 3 of a pool of junk are the same number, which is why the old badge gave the top result 99% no matter how badly the query had gone. A hopeless query now honestly reads in the twenties all the way down.
+It is deliberately *not* derived from list position, from RRF, or from the cross-encoder logit — because none of those measure content. A rank is content-blind: rank 3 of a pool of masterpieces and rank 3 of a pool of junk are the same number, which is why the old badge gave the top hit 99% however badly the query went.
 
-Every constant (`RRF_K`, channel weights, `QUALITY_WEIGHT`, the Bayesian prior, the cosine calibration band) is an env override, and `test_ranking.py` asserts the properties that must survive any retuning.
+The cross-encoder was measured and rejected for the badge for the same reason. Over 70 labelled query-document pairs on this catalogue its logits came out:
 
-Everything runs **locally** — no per-query external inference API. Qdrant itself is Qdrant Cloud.
+| | median | range |
+|---|---|---|
+| relevant | **-10.91** | -11.33 … +9.54 |
+| irrelevant | **-11.33** | -11.43 … -10.50 |
 
-`GET /` reports which of these are actually live (`rerank`, `sparse`, `dense_model`, and the real collection **point count**), and returns **503** when the index is missing or empty rather than reporting a healthy service that silently answers every search with `[]`.
+Near-total overlap, both deep in the negative tail — `sigmoid()` maps essentially everything to zero. It answers "does this passage answer this question", which is not what a catalogue is asked. Its *ordering* is still better than vector order alone (dropping it makes `Denis Villeneuve` return Spirited Away first), so it is fused as a rank and never as a score.
+
+The cosine band was measured the same way — relevant pairs centre on **0.63**, irrelevant on **0.43** — and `COSINE_FLOOR`/`COSINE_CEIL` are set from those numbers rather than guessed. Real output today:
+
+```
+cyberpunk dystopia about identity   62%  Cyberpunk: Edgerunners
+                                    24%  Blade Runner 2049
+                                    12%  Paddington 2
+quantum accounting seminar          12%  …everything floored
+```
+
+Every constant is an env override, and `test_ranking.py` asserts the properties that must survive any retuning.
+
+`GET /` reports what is actually live (`rerank`, `dense_model`, `store`, and the real **title count**), and returns **503** when the catalogue is missing or empty rather than reporting a healthy service that silently answers every search with `[]`.
 
 ### 🧠 Grounded RAG ("API" mode)
 
@@ -54,7 +72,7 @@ The Nemotron mode (`model: "api"`, via OpenRouter `nvidia/nemotron-nano-12b-v2-v
 Explicit search returns **pure query relevance** — favouriting horror never bleeds into a "cyberpunk anime" query. Taste-based recommendation lives only in the home feed:
 
 - **Your Favourites** — your saved wishlist.
-- **For You** — Qdrant `recommend` using your wishlist + likes + recent views as positive vectors (minus anything you dismissed).
+- **For You** — a taste centroid built in SQL from your wishlist + likes + recent views, with dismissed titles subtracted (Rocchio feedback).
 - **Because you liked X** — items similar to your top signal.
 - **Recently Viewed** — your view history.
 - **Top Movies / TV / Anime / Documentaries** — most-voted mainstream titles per category.
@@ -65,7 +83,7 @@ Logged-out visitors get the four "Top …" rows.
 
 ## 🛠️ Tech Stack
 
-**Backend:** FastAPI · Uvicorn · **Qdrant Cloud** (named dense + BM25 sparse vectors) · SQLAlchemy over **SQLite (local) / Postgres (prod)** · `sentence-transformers` (bge-small + ms-marco cross-encoder) · `fastembed` (BM25) · `torch` (cpu) · JWT (python-jose) + passlib/bcrypt · OpenAI SDK → OpenRouter (Nemotron).
+**Backend:** FastAPI · Uvicorn · **PostgreSQL + pgvector** (HNSW dense index, `tsvector` lexical index, GIN tag facets — one database for the catalogue *and* the users) · SQLAlchemy · `fastembed` ONNX (bge-small encoder + ms-marco cross-encoder, no torch) · JWT (python-jose) + passlib/bcrypt · OpenAI SDK → OpenRouter (Nemotron).
 
 **Frontend:** **Next.js 16** (App Router, React 19, TypeScript) · React Context store · reactive HTML5 Canvas neural background · cyberpunk dark/light themes · standalone `/title/[id]` detail pages.
 
@@ -83,7 +101,8 @@ nexus-neural-search/
 │   ├── ranking.py       # Ranking math: RRF, Bayesian quality, match calibration
 │   ├── auth.py          # JWT auth (SECRET_KEY from env)
 │   ├── database.py      # Env-driven DB: SQLite local, Postgres via DATABASE_URL
-│   └── models.py        # User, WishlistItem, SearchHistory, Interaction, MediaDetail
+│   ├── models.py        # User, WishlistItem, SearchHistory, Interaction
+│   └── store.py         # Catalogue on pgvector: schema, hybrid SQL, facets
 ├── frontend/            # Next.js app (App Router)
 │   ├── app/             # pages: / (search+feed), /title/[id] (detail), layout, globals.css
 │   ├── components/      # Feed, Card, DetailModal, AuthModal, Chrome, NeuralBg
@@ -96,9 +115,11 @@ nexus-neural-search/
 │   └── build.py         # Resumable CLI (python -m catalogue.build all)
 ├── test_ranking.py      # Ranking math property tests
 ├── test_catalogue.py    # Pipeline tests (tags, gates, image selection)
+├── test_store.py        # pgvector integration tests (real Postgres)
 ├── test_nexus.py        # Engine regression + smoke tests
+├── bench_storage.py     # Measure real bytes-per-title
 ├── debug.py             # One-shot engine sanity check
-├── .github/workflows/   # CI (tests + frontend build) and the keep-alive ping
+├── .github/workflows/   # CI, hosted catalogue build, keep-alive ping
 ├── requirements.txt
 ├── .env.example         # Copy to backend/.env and fill in
 └── README.md
@@ -122,8 +143,7 @@ Create `backend/.env`:
 
 ```env
 TMDB_API_KEY=...            # themoviedb.org (catalogue build)
-QDRANT_URL=...              # cloud.qdrant.io cluster URL
-QDRANT_API_KEY=...
+DATABASE_URL=...          # Neon (or any Postgres with pgvector + pg_trgm)
 SECRET_KEY=...              # python -c "import secrets; print(secrets.token_hex(32))"
 OPENROUTER_API_KEY=...      # optional, enables Nemotron "API" mode
 # DATABASE_URL=postgresql://user:pass@host/db?sslmode=require   # optional; omit for local SQLite
@@ -131,17 +151,30 @@ OPENROUTER_API_KEY=...      # optional, enables Nemotron "API" mode
 
 ### 2. Build the catalogue
 
+**The build runs on GitHub's runners, not on your machine.** Add two repository
+secrets (`TMDB_API_KEY`, `DATABASE_URL`), then **Actions → Build catalogue → Run
+workflow**. It harvests TMDB, tags everything, embeds it and loads it straight
+into Neon, then prints the title count and storage used in the run summary. A
+weekly cron re-runs the cheap stages so ratings and providers stay current.
+
+Nothing needs to stay on. Your laptop can be shut.
+
+<details>
+<summary>Running it locally instead</summary>
+
 Four resumable stages. Each writes to `data/`, so the expensive one is paid once.
 
 ```bash
-python -m catalogue.build all --target 120000 --recreate
+python -m catalogue.build all --target 50000 --recreate
 
 # or stage by stage
 python -m catalogue.build ids         # enumerate every TMDB id from the daily export
 python -m catalogue.build fetch       # download details (resumable — safe to interrupt)
 python -m catalogue.build normalise   # join AniList + IMDb, tag, quality-gate
-python -m catalogue.build index       # embed + upsert into Qdrant
+python -m catalogue.build index       # embed + load into Postgres
 ```
+
+</details>
 
 **Why the stages matter.** The previous builder paged TMDB's `/discover`, which is
 **hard-capped at page 500** — the ~6,850-title catalogue was a structural ceiling,
@@ -165,7 +198,7 @@ requested), AniList's **rank-weighted** tags for anime (`Cyberpunk 95, Tragedy 8
 the weight decides what reaches the embedding), and derived facets for era, origin,
 language, studio, franchise, certification and streaming provider. Everything is
 namespaced (`theme:dystopia`, `people:denis-villeneuve`, `studio:a24`) and indexed
-as a Qdrant keyword facet, so it is filterable and clickable rather than prose glued
+as a GIN-indexed array, so it is filterable, countable and clickable rather than prose glued
 onto the overview.
 
 ### 3. Run the API
@@ -206,20 +239,48 @@ Local dev defaults to SQLite (`backend/freeme.db`). Set `DATABASE_URL` to a host
 |---|---|---|
 | `POST` | `/recommend` | `{text, top_k, model, category?, min_rating?}` — `model` = `internal` (hybrid) or `api` (grounded RAG) |
 | `POST` | `/recommend/personalized` | Auth — logs search history, returns **pure** results |
-| `POST` | `/similar` | `{id}` — Qdrant recommend from one item |
+| `POST` | `/similar` | `{id}` — vector neighbours of one item |
 | `POST` | `/login` · `/signup` · `GET /me` | JWT auth |
 | `GET` | `/feed` · `/discover` | personalized home feed / anonymous landing feed |
 | `GET` | `/recommendations/foryou` | taste-based recommendations |
 | `GET/POST/DELETE` | `/wishlist...` | Auth — favourites |
 | `POST` | `/interactions` | Auth — `view` / `like` / `dismiss` |
 | `GET` | `/history/search` | Auth — recent searches |
-| `GET` | `/title/{id}` | full detail: trailer, cast, providers, backdrop (served from payload) |
+| `GET` | `/title/{id}` | full detail: trailer, cast, crew, providers, backdrop |
+| `GET` | `/facets/{namespace}` | tag counts for the filter bar — `theme`, `mood`, `genre`, `era`, `origin`, `people`, `studio`, `franchise`, `where`, `audience` |
+| `GET` | `/random` | one well-known title at random ("surprise me") |
+| `GET` | `/` | health: rerank/store/model state and the real title count; **503** when the catalogue is empty |
 
 ---
 
 ## ⚙️ Hosting notes
 
-Query-time embedding + reranking run in-process, so the host needs RAM for `torch` + bge-small + the cross-encoder (~600 MB resident). Set `ENABLE_RERANK=false` on tiny instances to run dense + BM25 only. Recommended split: **Vercel** (frontend) · **Render** (API) · **Qdrant Cloud** (vectors) · **Neon** (Postgres).
+Three services, one of them optional: **Vercel** (frontend) · **Render** (API) · **Neon** (Postgres — catalogue *and* users).
+
+Query-time embedding and reranking run in-process on ONNX, not torch, so the resident footprint is roughly 200 MB rather than 600+ MB. `ENABLE_RERANK=false` drops the cross-encoder if you need to go smaller.
+
+### Why one database
+
+The catalogue used to live in a Qdrant Cloud cluster. Free-tier vector clusters are suspended and eventually **deleted** after a period of inactivity, and a portfolio site that sits idle between visits is exactly the profile that gets reaped — it happened twice, and each time the API stayed up and cheerfully returned zero results for everything.
+
+Consolidating onto Postgres removed that failure mode rather than working around it:
+
+- Neon persists storage even when compute auto-suspends, and `pool_pre_ping` handles the wake.
+- One set of credentials, one thing to back up, one thing that can break.
+- The dense cosine survives fusion, which is what makes an honest %MATCH possible at all.
+- Tag facets become a GIN-indexed array with real `COUNT`s — awkward in Qdrant, native here.
+
+### Storage
+
+Measured with `bench_storage.py` on 5,000 realistic rows: **6.5 KB per title** with `halfvec` (float16) vectors, which pgvector ≥ 0.7 enables automatically.
+
+| titles | storage |
+|---|---|
+| 25,000 | ~166 MB |
+| 50,000 | ~332 MB |
+| 100,000 | ~663 MB |
+
+Neon's free tier is ~0.5 GB, so **50k fits comfortably free** and 100k needs a paid plan. Run `python bench_storage.py` against a scratch database to re-measure before deciding — below a few thousand rows the fixed costs dominate and any estimate is meaningless.
 
 ### Cold starts
 

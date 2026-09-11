@@ -1,0 +1,135 @@
+name: Build catalogue
+
+# Builds the whole catalogue on GitHub's runners and loads it straight into Neon.
+# Nothing runs on your machine, and nothing needs your machine to be on.
+#
+# A runner gives 4 vCPU / 16 GB RAM / ~14 GB disk and a 6-hour job limit, which
+# comfortably covers a 100k-title build: roughly 45 min of TMDB fetching at 40
+# req/s, a few minutes to normalise, and ~30 min to embed.
+#
+# Setup (once):
+#   Settings > Secrets and variables > Actions > New repository secret
+#     TMDB_API_KEY   your themoviedb.org v3 API key
+#     DATABASE_URL   your Neon connection string (the pooled one is fine)
+#
+# Then: Actions > Build catalogue > Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "How many titles to keep"
+        required: true
+        default: "50000"
+      min_votes:
+        description: "Minimum vote count (quality floor)"
+        required: true
+        default: "8"
+      recreate:
+        description: "Drop and rebuild the tables from scratch"
+        type: boolean
+        default: false
+      stages:
+        description: "Which stages to run"
+        type: choice
+        default: all
+        options: [all, ids, fetch, normalise, index]
+  schedule:
+    # Weekly refresh. Re-runs normalise + index against the cached raw data, so
+    # ratings and providers stay current without re-harvesting TMDB.
+    - cron: "0 4 * * 0"
+
+concurrency:
+  # Two builds writing the same tables at once would interleave upserts.
+  group: catalogue
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      TARGET: ${{ github.event.inputs.target || '50000' }}
+      MIN_VOTES: ${{ github.event.inputs.min_votes || '8' }}
+      STAGES: ${{ github.event.inputs.stages || 'normalise-index' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Check secrets are set
+        run: |
+          test -n "$TMDB_API_KEY"  || { echo "::error::TMDB_API_KEY secret is not set"; exit 1; }
+          test -n "$DATABASE_URL"  || { echo "::error::DATABASE_URL secret is not set"; exit 1; }
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      # The raw TMDB responses are the expensive part (one request per title),
+      # so they are cached between runs. A scheduled refresh then re-tags and
+      # re-indexes for free instead of re-harvesting.
+      - name: Restore harvested data
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: catalogue-${{ env.TARGET }}-${{ github.run_id }}
+          restore-keys: |
+            catalogue-${{ env.TARGET }}-
+            catalogue-
+
+      - name: Free disk space
+        # A 100k harvest writes a few GB; the runner ships with several GB of
+        # preinstalled toolchains we do not need.
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
+          df -h /
+
+      - name: Enumerate TMDB ids
+        if: contains(env.STAGES, 'ids') || env.STAGES == 'all'
+        run: python -m catalogue.build ids --target "$TARGET"
+
+      - name: Fetch details
+        if: contains(env.STAGES, 'fetch') || env.STAGES == 'all'
+        run: python -m catalogue.build fetch --target "$TARGET" --workers 24
+
+      - name: Normalise, tag and quality-gate
+        if: contains(env.STAGES, 'normalise') || env.STAGES == 'all'
+        run: python -m catalogue.build normalise --target "$TARGET" --min-votes "$MIN_VOTES"
+
+      - name: Embed and index into Neon
+        if: contains(env.STAGES, 'index') || env.STAGES == 'all'
+        run: |
+          python -m catalogue.build index \
+            ${{ github.event.inputs.recreate == 'true' && '--recreate' || '' }}
+
+      - name: Verify the live catalogue
+        run: |
+          python - <<'PY'
+          from backend import store
+          h = store.health()
+          rep = store.storage_report()
+          print(f"titles   {h['titles']}")
+          print(f"storage  {rep['total_mb']} MB ({rep['bytes_per_title']/1024:.1f} KB/title)")
+          assert h["ok"], f"catalogue unhealthy: {h}"
+          PY
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Catalogue build"
+            echo ""
+            python - <<'PY'
+          from backend import store
+          h, rep = store.health(), store.storage_report()
+          print(f"- titles: **{h['titles']:,}**")
+          print(f"- storage: **{rep['total_mb']} MB** ({rep['bytes_per_title']/1024:.1f} KB/title)")
+          print(f"- healthy: {h['ok']}")
+          PY
+          } >> "$GITHUB_STEP_SUMMARY"

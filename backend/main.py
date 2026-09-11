@@ -4,19 +4,17 @@ Nexus API.
 Routes are thin; all retrieval logic lives in backend/engine.py.
 
 Search modes (frontend sends `model`):
-  * "internal" -> hybrid vector search (dense + BM25 + cross-encoder rerank)
+  * "internal" -> hybrid search (pgvector dense + Postgres full-text + rerank)
   * "api"      -> grounded RAG: same hybrid retrieval, then Nemotron reranks/explains
                   REAL results (no hallucinated titles).
 
 User system: JWT auth, wishlist, server-side search history, interactions
 (view/like/dismiss), history-driven "For You" recommendations, a home feed,
-and a TMDB-enriched title detail endpoint.
+title detail, and tag facet counts for the filter bar.
 """
 
-import json
 import os
 import time
-from datetime import datetime
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -31,19 +29,20 @@ from backend.database import Base, SessionLocal, engine
 from backend.engine import (
     DENSE_MODEL,
     ENABLE_RERANK,
-    ENABLE_SPARSE,
     EngineUnavailable,
     build_filter,
     collection_health,
-    enrich_detail,
+    facets,
     for_you,
     get_by_ids,
+    get_detail,
     ground_with_llm,
     hybrid_search,
+    random_title,
     similar_items,
     top_popular,
 )
-from backend.models import Interaction, MediaDetail, SearchHistory, User, WishlistItem
+from backend.models import Interaction, SearchHistory, User, WishlistItem
 
 app = FastAPI(title="Nexus Neural Search")
 
@@ -147,11 +146,11 @@ def health_check():
         "status": "online" if vec["ok"] else "degraded",
         "engine": "hybrid+rerank" if ENABLE_RERANK else "hybrid",
         "rerank": ENABLE_RERANK,
-        "sparse": ENABLE_SPARSE,
+        "lexical": "postgres-tsvector",
+        "store": "postgres+pgvector",
         "dense_model": DENSE_MODEL,
         "llm": bool(os.getenv("OPENROUTER_API_KEY")),
-        "collection": vec["collection"],
-        "points": vec["points"],
+        "titles": vec["points"],
     }
     if not vec["ok"]:
         body["error"] = vec["error"]
@@ -194,8 +193,8 @@ def _search(req: SearchRequest) -> list[dict]:
         qfilter=qfilter,
     )
     if req.model == "api":
-        return _patch_posters(ground_with_llm(req.text, hits, top_k=req.top_k))
-    return _patch_posters(hits[:req.top_k])
+        return ground_with_llm(req.text, hits, top_k=req.top_k)
+    return hits[:req.top_k]
 
 
 @app.post("/recommend")
@@ -262,7 +261,7 @@ def feed(user=Depends(get_current_user_db), db: Session = Depends(get_db)):
               .order_by(WishlistItem.added_at.desc()).limit(40).all()]
     favs = get_by_ids(wl_ids)
     if favs:
-        rows.append({"title": "Your Favourites", "items": _patch_posters(_dedupe(favs), db)})
+        rows.append({"title": "Your Favourites", "items": _dedupe(favs)})
 
     if profile:
         fy = for_you(profile, negative_ids=_dismissed_ids(user.id, db), top_k=20, exclude_ids=set(profile))
@@ -279,7 +278,7 @@ def feed(user=Depends(get_current_user_db), db: Session = Depends(get_db)):
         Interaction.created_at.desc()).limit(40).all()
     recent = get_by_ids([v.media_id for v in views])
     if recent:
-        rows.append({"title": "Recently Viewed", "items": _patch_posters(_dedupe(recent), db)})
+        rows.append({"title": "Recently Viewed", "items": _dedupe(recent)})
 
     rows += _cached_popular_rows()
     return rows
@@ -309,33 +308,6 @@ def _cached_popular_rows() -> list[dict]:
     return _popular_cache["rows"]
 
 
-def _patch_posters(items: list[dict], db: Optional[Session] = None) -> list[dict]:
-    """Override stored (often wrong/missing) images with corrected TMDB posters
-    from the MediaDetail cache. Fixes Recently Viewed / feed / search posters
-    (e.g. 'Another Life' no longer shows the Re:Zero art) once a title is enriched.
-
-    Pass the request-scoped `db` when there is one; only the unauthenticated
-    paths fall back to opening their own session.
-    """
-    if not items:
-        return items
-    ids = [str(it.get("id")) for it in items]
-    own_session = db is None
-    db = db or SessionLocal()
-    try:
-        rows = db.query(MediaDetail.media_id, MediaDetail.poster).filter(
-            MediaDetail.media_id.in_(ids), MediaDetail.poster.isnot(None)).all()
-    finally:
-        if own_session:
-            db.close()
-    posters = {mid: p for mid, p in rows if p}
-    for it in items:
-        p = posters.get(str(it.get("id")))
-        if p:
-            it["image"] = p
-    return items
-
-
 def _dedupe(items: list[dict]) -> list[dict]:
     """Drop repeated ids and repeated posters (bad TMDB data reuses posters)."""
     out, seen_id, seen_img = [], set(), set()
@@ -353,16 +325,11 @@ def _dedupe(items: list[dict]) -> list[dict]:
 
 def _popular_rows() -> list[dict]:
     rows = []
-    db = SessionLocal()  # one session for all four rows, not one per row
-    try:
-        for cat, label in [("MOVIE", "Top Movies"), ("TV", "Top TV"),
-                           ("ANIME", "Top Anime"), ("DOCUMENTARY", "Top Documentaries")]:
-            items = _patch_posters(
-                _dedupe(top_popular(top_k=24, qfilter=build_filter(category=cat))), db)
-            if items:
-                rows.append({"title": label, "items": items[:20]})
-    finally:
-        db.close()
+    for cat, label in [("MOVIE", "Top Movies"), ("TV", "Top TV"),
+                       ("ANIME", "Top Anime"), ("DOCUMENTARY", "Top Documentaries")]:
+        items = _dedupe(top_popular(top_k=24, qfilter=build_filter(category=cat)))
+        if items:
+            rows.append({"title": label, "items": items[:20]})
     return rows
 
 
@@ -400,50 +367,39 @@ def get_view_history(limit: int = 30, user=Depends(get_current_user_db), db: Ses
     return get_by_ids([v.media_id for v in views])
 
 
-# --- Title detail (TMDB enriched, cached) -------------------------------------
+# --- Title detail -------------------------------------------------------------
 
 @app.get("/title/{media_id}")
-def title_detail(media_id: str, db: Session = Depends(get_db)):
-    cards = get_by_ids([media_id])
-    if not cards:
+def title_detail(media_id: str):
+    """Full record straight from the catalogue.
+
+    The cast/crew/providers blob is written at build time into `media_extra`, so
+    this is one indexed read. The previous version kept a MediaDetail cache table
+    and fell back to a live TMDB search on a miss — a per-open network call, on
+    the render path, for data the build already had.
+    """
+    card = get_detail(media_id)
+    if not card:
         raise HTTPException(status_code=404, detail="Not found")
-    card = cards[0]
+    return card
 
-    # Fast path: build_catalogue.py already embedded validated enrichment in the
-    # Qdrant payload (trailer/cast/providers/backdrop). Serve it with no TMDB call.
-    if card.get("trailer_key") or card.get("cast") or card.get("providers"):
-        return card
 
-    cached = db.query(MediaDetail).filter_by(media_id=media_id).first()
-    if cached:
-        enrichment = {
-            "tmdb_id": cached.tmdb_id,
-            "poster": cached.poster,
-            "trailer_key": cached.trailer_key,
-            "cast": json.loads(cached.cast_json) if cached.cast_json else [],
-            "providers": json.loads(cached.providers_json) if cached.providers_json else [],
-            "backdrop": cached.backdrop,
-            "runtime": cached.runtime,
-        }
-    else:
-        enrichment = enrich_detail(media_id, card)
-        db.merge(MediaDetail(
-            media_id=media_id,
-            tmdb_id=enrichment.get("tmdb_id"),
-            poster=enrichment.get("poster"),
-            trailer_key=enrichment.get("trailer_key"),
-            cast_json=json.dumps(enrichment.get("cast", [])),
-            providers_json=json.dumps(enrichment.get("providers", [])),
-            backdrop=enrichment.get("backdrop"),
-            runtime=enrichment.get("runtime"),
-            fetched_at=datetime.utcnow(),
-        ))
-        db.commit()
+@app.get("/facets/{namespace}")
+def tag_facets(namespace: str, limit: int = 40, category: Optional[str] = None):
+    """Tag counts for the filter bar, e.g. /facets/theme or /facets/mood.
 
-    # Prefer the corrected TMDB poster (fixes wrong/low-quality stored images).
-    if enrichment.get("poster"):
-        card["image"] = enrichment["poster"]
-    card.update(enrichment)
+    Namespaces: theme, mood, genre, era, origin, lang, people, studio,
+    franchise, where, audience, rated, form.
+    """
+    return facets(namespace, min(limit, 100), build_filter(category=category))
+
+
+@app.get("/random")
+def surprise_me():
+    """One well-known title at random."""
+    card = random_title()
+    if not card:
+        raise HTTPException(status_code=503, detail="Catalogue unavailable")
     return card
 
 
