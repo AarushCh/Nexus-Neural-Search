@@ -190,6 +190,7 @@ def _index_sql() -> list:
     # Trigram index on the title powers fuzzy title lookup — the old exact/prefix
     # match found neither typos nor partial titles.
     "CREATE INDEX IF NOT EXISTS media_title_trgm   ON media USING gin (title gin_trgm_ops)",
+    "CREATE INDEX IF NOT EXISTS media_orig_trgm    ON media USING gin (original_title gin_trgm_ops)",
     "CREATE INDEX IF NOT EXISTS media_category_idx ON media (category)",
     "CREATE INDEX IF NOT EXISTS media_votes_idx    ON media (votes DESC)",
     "CREATE INDEX IF NOT EXISTS media_rating_idx   ON media (rating DESC)",
@@ -400,6 +401,12 @@ def title_candidates(query: str, limit: int = 12, filter_sql: str = "",
 
     Postgres `similarity()` catches typos and partial titles that the previous
     exact/prefix string comparison missed entirely.
+
+    Matches the ORIGINAL title too. The dense model is English-only and the
+    tsvector uses the english config, so neither can find a film typed in its
+    own language — searching 千と千尋の神隠し returned three unrelated Japanese
+    titles instead of Spirited Away. Trigram over original_title is the only
+    channel that can answer that query.
     """
     params = dict(params or {})
     params["q"] = query
@@ -411,10 +418,12 @@ def title_candidates(query: str, limit: int = 12, filter_sql: str = "",
     # `%` is the pg_trgm similarity operator and is what uses the GIN index;
     # similarity() in the ORDER BY only re-scores the rows it already found.
     sql = f"""
-    SELECT {CARD_COLUMNS}, similarity(title, :q) AS _sim
+    SELECT {CARD_COLUMNS},
+           GREATEST(similarity(title, :q),
+                    similarity(COALESCE(original_title, ''), :q)) AS _sim
     FROM media m
-    {_where(filter_sql, "title % :q")}
-    ORDER BY similarity(title, :q) DESC, votes DESC
+    {_where(filter_sql, "(title % :q OR original_title % :q)")}
+    ORDER BY _sim DESC, votes DESC
     LIMIT :lim
     """
     with engine.connect() as cx:
