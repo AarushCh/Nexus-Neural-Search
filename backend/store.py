@@ -411,6 +411,19 @@ def title_candidates(query: str, limit: int = 12, filter_sql: str = "",
     params = dict(params or {})
     params["q"] = query
     params["lim"] = int(limit)
+    # Containment match, as a bound parameter so no literal % ever enters the
+    # SQL text (see the escaping note below).
+    #
+    # Only for queries carrying non-ASCII characters. pg_trgm keeps only what
+    # the database locale calls alphanumeric, so CJK can yield NO trigrams at
+    # all and similarity() is then permanently 0 — searching a film by its
+    # Japanese title found nothing at all. LIKE does not tokenise, so it works
+    # where trigram is blind. Restricted to exactly that case on purpose: an
+    # ASCII "%war%" would match hundreds of titles and pin them all, and
+    # trigram already handles ASCII correctly.
+    q_clean = query.strip().lower()
+    needs_like = len(q_clean) >= 2 and any(ord(c) > 127 for c in q_clean)
+    params["like"] = f"%{q_clean}%" if needs_like else ""
     # NOTE the single `%`. SQLAlchemy doubles literal percent signs when the
     # driver uses pyformat paramstyle (psycopg2), and psycopg2 then halves them
     # again — so writing `%%` here reaches Postgres as `%%`, which is not an
@@ -420,9 +433,15 @@ def title_candidates(query: str, limit: int = 12, filter_sql: str = "",
     sql = f"""
     SELECT {CARD_COLUMNS},
            GREATEST(similarity(title, :q),
-                    similarity(COALESCE(original_title, ''), :q)) AS _sim
+                    similarity(COALESCE(original_title, ''), :q),
+                    CASE WHEN :like <> '' AND (
+                             lower(COALESCE(original_title, '')) LIKE :like
+                             OR lower(title) LIKE :like)
+                         THEN 0.95 ELSE 0 END) AS _sim
     FROM media m
-    {_where(filter_sql, "(title % :q OR original_title % :q)")}
+    {_where(filter_sql, "(title % :q OR original_title % :q OR (:like <> '' AND "
+                        "(lower(COALESCE(original_title, '')) LIKE :like "
+                        "OR lower(title) LIKE :like)))")}
     ORDER BY _sim DESC, votes DESC
     LIMIT :lim
     """
