@@ -272,6 +272,15 @@ def stage_index() -> None:
                 size=VECTOR_SIZE, distance=models.Distance.COSINE)},
             sparse_vectors_config={SPARSE_VECTOR: models.SparseVectorParams(
                 modifier=models.Modifier.IDF)},
+            # Payloads live on disk, not in RAM.
+            #
+            # At 100k titles the payload (cast, crew, providers, tags, alt
+            # titles) is roughly 300-500MB, while the dense vectors are only
+            # ~150MB. Left in memory the payload is what exhausts a 1GB free
+            # tier — and it would do so partway through the upsert, leaving a
+            # half-built collection. Vectors stay resident so search is fast;
+            # payload is read from disk only for the results actually returned.
+            on_disk_payload=True,
         )
 
     # `title` must be lowercase-tokenised: the engine pins exact title matches by
