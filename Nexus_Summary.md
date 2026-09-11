@@ -485,7 +485,7 @@ TMDB and AniList give you *what a thing is about*. They don't give you *how it f
 
 - Fix a **controlled vocabulary of ~60 moods** (`cozy`, `bleak`, `hopeful`, `melancholic`, `tense`, `whimsical`, `cathartic`, `unsettling`, `triumphant`, `wistful`, `absurd`, `meditative`, `feral`, …). Controlled = filterable, consistent, and countable. Free-text moods would be useless as facets.
 - For each title, send `title + overview + genres + top keywords` and ask for **3–6 moods from the fixed list, plus a one-sentence "vibe line"**.
-- Batch it. Use a cheap fast model — `claude-haiku-4-5` is the right tool: high quality per token, and at ~400 input / ~60 output tokens per title, 110k titles is a **few dollars, one time**.
+- Batch it. A small, fast instruction-following model is the right tool here — the task is constrained enough that frontier quality buys nothing. At ~400 input / ~60 output tokens per title, 110k titles is a **few dollars, one time**.
 - Store `mood[]` (filterable) and `vibe_line` (shown on the card and fed into the embedding).
 - Cache by `tmdb_id` so re-runs are free; only new titles cost anything.
 
@@ -561,7 +561,7 @@ Current: `nvidia/nemotron-nano-12b-v2-vl:free` via OpenRouter, used to reorder +
 Problems: free-tier models are rate-limited and flaky, so "API mode" silently degrades to hybrid often; the prompt asks for JSON with no schema enforcement, parsed by regex; and there's no timeout budget separate from the 30s client timeout.
 
 Upgrades:
-- **Primary model:** `claude-haiku-4-5` — fast, cheap, reliable, good instruction-following for a constrained reranking task. Keep an OpenRouter free model as an explicit fallback tier.
+- **Primary model:** a paid small/fast model on OpenRouter — reliable throughput and good instruction-following for a constrained reranking task, for a fraction of a cent per query. Keep a free model as an explicit fallback tier.
 - **Structured output** instead of regex-matching a JSON array out of prose.
 - **Cache by `(query_hash, candidate_id_set_hash)`** — the same query should never pay twice.
 - **Streaming explanations** — return hybrid results *instantly*, then stream the LLM's reasoning in. Today you wait for the whole LLM call before anything renders. This is a big perceived-speed win.
