@@ -16,7 +16,7 @@
 
 ## 📖 Overview
 
-Ask Nexus for *"cyberpunk anime about identity"* **or** an exact title like *"Cyberpunk: Edgerunners"* — it handles both. Every query runs **hybrid retrieval** (dense vectors + Postgres full-text), fuses the two with Reciprocal Rank Fusion, and **reranks with a cross-encoder**. On top of that sits a full product: user accounts, a personalized home feed, wishlist/favourites, search history, view tracking, and flagship detail pages with trailers, cast, and where-to-watch.
+Ask Nexus for *"cyberpunk anime about identity"* **or** an exact title like *"Cyberpunk: Edgerunners"* — it handles both. Every query runs **hybrid retrieval** (dense vectors + Postgres full-text), fuses the two with Reciprocal Rank Fusion, and can **rerank with a cross-encoder** where there is memory for it. On top of that sits a full product: user accounts, a personalized home feed, wishlist/favourites, search history, view tracking, and flagship detail pages with trailers, cast, and where-to-watch.
 
 The catalogue is built from TMDB's daily id exports and quality-gated on artwork, overview and vote count, then enriched with AniList's rank-weighted tags and IMDb ratings. Every card has a poster that passed a real resolution and aspect-ratio bar, so artwork is correct by construction and detail pages load instantly.
 
@@ -31,7 +31,11 @@ Every `internal` search runs as **one SQL query against one database**.
 1. **Dense channel** — the query is embedded with `BAAI/bge-small-en-v1.5` (384-dim, ONNX), and `pgvector` HNSW returns the nearest titles *with their cosines*.
 2. **Lexical channel** — Postgres `tsvector` + `ts_rank_cd` catches exact words the vectors miss: a director's name, a studio, an exact title. It brings stemming, so "haunting" matches "haunted".
 3. **Fusion** — the two rankings are fused with **weighted Reciprocal Rank Fusion** in `backend/ranking.py`, with per-channel weights.
-4. **Cross-encoder rerank** — `Xenova/ms-marco-MiniLM-L-6-v2` reranks the shortlist and its *ordering* joins the fusion as a third channel. It runs on the same ONNX runtime as the encoder, so unlike the old torch build it actually runs in production.
+4. **Cross-encoder rerank (optional)** — `Xenova/ms-marco-MiniLM-L-6-v2` reranks the shortlist and its *ordering*
+   joins the fusion as a third channel. It runs on the same ONNX runtime as the encoder, so unlike the old torch
+   build it can run in production at all — but it costs a measured 106 MB on top of the encoder's 186 MB, which does
+   not fit a 512 MB instance alongside the app. `ENABLE_RERANK` therefore defaults to **off**; the public deployment
+   runs the two retrieval channels only. Turn it on where there is ~1 GB.
 5. **Title pinning** — token-set similarity **and** Postgres trigram similarity, so `fellowship of the ring` (partial) and `spirted away` (typo) both resolve.
 6. **Ranking** — relevance blended with a **vote-shrunk Bayesian quality prior** (the IMDb weighted-rating formula), log-linearly, so a popular title that *doesn't* match can never climb over one that does, while quality breaks ties.
 
@@ -257,7 +261,10 @@ Local dev defaults to SQLite (`backend/freeme.db`). Set `DATABASE_URL` to a host
 
 Three services, one of them optional: **Vercel** (frontend) · **Render** (API) · **Neon** (Postgres — catalogue *and* users).
 
-Query-time embedding and reranking run in-process on ONNX, not torch, so the resident footprint is roughly 200 MB rather than 600+ MB. `ENABLE_RERANK=false` drops the cross-encoder if you need to go smaller.
+Query-time embedding runs in-process on ONNX, not torch. Measured resident cost: **186 MB** for the encoder and a
+further **106 MB** if the cross-encoder is enabled, against ~600 MB for the equivalent torch build. `ONNX_THREADS`
+defaults to 1 because ONNX Runtime gives every intra-op thread its own memory arena and a container reports the
+host's core count — left alone, that multiplies resident memory until the worker is OOM-killed mid-request.
 
 ### Why one database
 
