@@ -335,6 +335,23 @@ def test_storage_report_measures_real_bytes():
           f"-> ~{rep['projected_100k_mb']} MB at 100k")
 
 
+def test_prune_refuses_a_truncated_build():
+    """prune_missing deletes what a rebuild dropped, but must refuse when the
+    incoming catalogue is far smaller than what is stored — that means a failed
+    or truncated build, and pruning against it would gut a live catalogue."""
+    stored = store.health()["titles"]
+    # One id, against a populated table: nowhere near the 80% floor.
+    out = store.prune_missing(["00000000-0000-0000-0000-000000000000"])
+    assert out["pruned"] == 0, out
+    assert out["skipped"], out
+    assert store.health()["titles"] == stored, "prune deleted rows it should not have"
+
+    # No ids at all is refused outright.
+    assert store.prune_missing([])["pruned"] == 0
+    assert store.health()["titles"] == stored
+    print(f"  ok  prune refuses a truncated build ({out['skipped']})")
+
+
 def main() -> int:
     print("Setting up fixtures against real Postgres…")
     setup()

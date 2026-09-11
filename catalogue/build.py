@@ -366,6 +366,16 @@ def stage_index() -> None:
             rate = done / max(time.time() - started, 1)
             print(f"   {done}/{len(rows)}  ({rate:.0f}/s)")
 
+    # Drop whatever the previous build left behind that this one rejected --
+    # otherwise an in-place rebuild can never remove a title, and everything
+    # the new quality gates exclude stays live. Guarded against a truncated
+    # build so a failed run cannot gut a working catalogue.
+    pruned = store.prune_missing([r["id"] for r in rows])
+    if pruned["skipped"]:
+        print(f"   prune skipped: {pruned['skipped']}")
+    elif pruned["pruned"]:
+        print(f"   pruned {pruned['pruned']} titles this build no longer keeps")
+
     print("🏗️  Building indexes (HNSW is the slow one)…")
     store.create_indexes()
     store.analyze()

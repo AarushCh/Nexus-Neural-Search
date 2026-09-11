@@ -590,6 +590,34 @@ def top_by_quality(limit: int = 20, filter_sql: str = "", params: dict = None,
     return [_card({k: v for k, v in r.items() if not k.startswith("_")}) for r in rows]
 
 
+def prune_missing(keep_ids: list, min_ratio: float = 0.8) -> dict:
+    """Delete catalogue rows that the new build no longer contains.
+
+    A rebuild upserts in place so the site stays up, but that leaves anything
+    the new build DROPPED sitting in the table forever — titles that failed a
+    gate the previous build did not have, such as the adult filter. Recreating
+    the table would purge them at the cost of hours of downtime.
+
+    Refuses to run when the incoming catalogue is much smaller than what is
+    already stored: that means a truncated or failed build, and pruning against
+    it would gut a working catalogue.
+    """
+    keep = [str(i) for i in keep_ids if i]
+    if not keep:
+        return {"pruned": 0, "skipped": "no incoming ids"}
+    with engine.connect() as cx:
+        current = cx.execute(text("SELECT count(*) FROM media")).scalar() or 0
+        if current and len(keep) < current * min_ratio:
+            return {"pruned": 0, "skipped":
+                    f"incoming {len(keep)} < {min_ratio:.0%} of stored {current}"}
+        n = cx.execute(text("DELETE FROM media WHERE NOT (id = ANY(:keep))"),
+                       {"keep": keep}).rowcount
+        cx.execute(text("DELETE FROM media_extra WHERE NOT (id = ANY(:keep))"),
+                   {"keep": keep})
+        cx.commit()
+    return {"pruned": int(n or 0), "skipped": None}
+
+
 def facet_counts(namespace: str, limit: int = 40, filter_sql: str = "",
                  params: dict = None) -> list[dict]:
     """Most common tags in a namespace, with counts.
