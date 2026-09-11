@@ -14,7 +14,6 @@ export default function TitlePage() {
   const { token, isSaved, toggleWishlist, toast } = useStore();
   const [m, setM] = useState<Media | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -24,7 +23,6 @@ export default function TitlePage() {
       .detail(String(id))
       .then((d) => {
         setM(d);
-        setSaved(isSaved(d.id));
       })
       .catch(() => setM(null))
       .finally(() => setLoading(false));
@@ -37,10 +35,13 @@ export default function TitlePage() {
   const ratingVal = parseFloat(String(m.rating));
   const rating = !isNaN(ratingVal) && ratingVal > 0 ? `★ ${ratingVal.toFixed(1)}` : "";
   const type = (m.type || "MOVIE").toUpperCase();
+  // From the store, not a mount-time snapshot: the wishlist loads after login
+  // and a copy taken before it arrived showed SAVE on an already-saved title.
+  const saved = isSaved(m.id);
 
   const onHeart = async () => {
     if (!token) return toast("Login to save titles");
-    setSaved(await toggleWishlist(m));
+    await toggleWishlist(m);
   };
 
   return (

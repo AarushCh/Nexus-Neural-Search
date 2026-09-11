@@ -19,12 +19,10 @@ export default function DetailModal({
   const { token, isSaved, toggleWishlist, toast } = useStore();
   const [full, setFull] = useState<Media | null>(null);
   const [loading, setLoading] = useState(false);
-  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (!media) return;
     setFull(null);
-    setSaved(isSaved(media.id));
     setLoading(true);
     if (token) api.interact(String(media.id), "view", token);
     api
@@ -40,10 +38,14 @@ export default function DetailModal({
   const ratingVal = parseFloat(String(m.rating));
   const rating = !isNaN(ratingVal) && ratingVal > 0 ? `★ ${ratingVal.toFixed(1)}` : "";
   const type = (m.type || "MOVIE").toUpperCase();
+  // Derived from the store, not copied into local state at mount: the wishlist
+  // arrives after login, and a snapshot taken before it did left the button
+  // reading SAVE for a title that was already saved.
+  const saved = isSaved(m.id);
 
   const onHeart = async () => {
     if (!token) return toast("Login to save titles");
-    setSaved(await toggleWishlist(m));
+    await toggleWishlist(m);
   };
 
   return (
