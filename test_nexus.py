@@ -96,6 +96,39 @@ def test_quality_still_breaks_ties():
     print("  ok  quality still orders equally-matching titles")
 
 
+def test_inference_is_capped_to_survive_concurrent_searches():
+    """Regression: FastAPI serves sync routes from a 40-thread pool, so four
+    simultaneous searches ran four ONNX inferences at once and OOM-killed the
+    512 MB worker — every one of them returned 502. Measured ceiling was 3."""
+    import threading
+    import time
+
+    from backend.engine import MODEL_CONCURRENCY, _inference
+
+    assert MODEL_CONCURRENCY >= 1
+    peak = 0
+    live = 0
+    lock = threading.Lock()
+
+    def work():
+        nonlocal peak, live
+        with _inference:
+            with lock:
+                live += 1
+                peak = max(peak, live)
+            time.sleep(0.02)
+            with lock:
+                live -= 1
+
+    threads = [threading.Thread(target=work) for _ in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak <= MODEL_CONCURRENCY, f"{peak} ran at once, cap is {MODEL_CONCURRENCY}"
+    print(f"  ok  inference capped at {MODEL_CONCURRENCY} under 12 callers (peak {peak})")
+
+
 def test_dedupe_key_keeps_remakes():
     """Catalogue dedupe keys on title+year so both Dunes survive."""
     assert dedupe_key("Dune", "1984") != dedupe_key("Dune", "2021")

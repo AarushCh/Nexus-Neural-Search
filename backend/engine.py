@@ -134,8 +134,23 @@ def collection_health() -> dict:
 
 # --- Embedding helpers --------------------------------------------------------
 
+# How many model inferences may run at once.
+#
+# FastAPI serves sync routes from a 40-thread pool, so N simultaneous searches
+# meant N simultaneous ONNX inferences. Measured against the 512 MB instance:
+# 3 concurrent searches succeed, the 4th OOM-kills the worker and ALL of them
+# return 502 — four visitors at the same moment took the site down. The
+# semaphore makes the fourth wait a beat instead of killing the other three.
+# It costs no throughput: the work is CPU-bound on a shared core, so it was
+# never running in parallel, only competing for the same memory.
+MODEL_CONCURRENCY = int(os.getenv("MODEL_CONCURRENCY", "2"))
+_inference = threading.BoundedSemaphore(MODEL_CONCURRENCY)
+
+
 def embed_query(text: str) -> list[float]:
-    return next(_get_dense().embed([QUERY_INSTRUCTION + text])).tolist()
+    model = _get_dense()          # load outside the gate; loading is one-time
+    with _inference:
+        return next(model.embed([QUERY_INSTRUCTION + text])).tolist()
 
 
 def embed_docs(texts: list[str]) -> list[list[float]]:
@@ -184,8 +199,11 @@ def rerank_order(query: str, cards: list[dict]) -> list[str] | None:
         return None
     docs = [f"{c.get('title','')}. {c.get('description','')}"[:512] for c in cards]
     try:
-        scored = sorted(zip(cards, cross.rerank(query, docs)),
-                        key=lambda t: float(t[1]), reverse=True)
+        # Same gate as the encoder: the cross-encoder is the larger of the two
+        # models, so concurrent reranks are the faster route to an OOM kill.
+        with _inference:
+            logits = cross.rerank(query, docs)
+        scored = sorted(zip(cards, logits), key=lambda t: float(t[1]), reverse=True)
         return [str(c.get("id")) for c, _ in scored]
     except Exception as e:  # noqa: BLE001
         print(f"⚠️  Rerank failed, using retrieval order: {e}")
