@@ -28,6 +28,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from backend import ranking
+
 load_dotenv()
 
 # --- Configuration ------------------------------------------------------------
@@ -188,23 +190,6 @@ def _rating(card: dict) -> float:
         return 0.0
 
 
-def _rerank(query: str, hits: list[dict]) -> list[dict]:
-    """Cross-encoder rerank (semantic ordering). Returns hits reordered, not truncated."""
-    if not hits:
-        return []
-    cross = _get_cross_encoder() if ENABLE_RERANK else None
-    if cross is not None:
-        pairs = [[query, f"{h.get('title','')}. {h.get('description','')}"[:512]] for h in hits]
-        try:
-            scores = cross.predict(pairs)
-            for h, s in zip(hits, scores):
-                h["rerank"] = float(s)
-            hits.sort(key=lambda h: h["rerank"], reverse=True)
-        except Exception as e:  # noqa: BLE001
-            print(f"⚠️  Rerank failed, using fusion order: {e}")
-    return hits
-
-
 def build_filter(category=None, min_rating=None, year_min=None, year_max=None):
     """Assemble a Qdrant payload filter for server-side faceting (indexes come from build_catalogue.py)."""
     from qdrant_client import models
@@ -248,80 +233,74 @@ def _title_lookup(query: str, limit: int = 8, qfilter=None) -> list[dict]:
         print(f"⚠️  Title lookup failed: {e}")
         return []
 
-    exact, prefix = [], []
+    pinned = []
     for p in points:
         card = _hit_to_dict(p)
-        nt = _normalize(card.get("title", ""))
-        if nt == nq:
-            card["_pin"] = "exact"
-            exact.append(card)
-        elif nt.startswith(nq + " ") or nt.startswith(nq):
-            card["_pin"] = "prefix"
-            prefix.append(card)
-    exact.sort(key=_rating, reverse=True)
-    prefix.sort(key=_rating, reverse=True)
-    return (exact + prefix)[:limit]
+        # Token-set matching, not string prefix: "fellowship of the ring" and
+        # "star wars a new hope" are titles people type and the old exact/prefix
+        # comparison found neither.
+        pin = ranking.classify_pin(query, card.get("title", ""))
+        if pin:
+            card["_pin"] = pin
+            card["_pin_sim"] = ranking.title_similarity(query, card.get("title", ""))
+            pinned.append(card)
+    # Best string match first; quality breaks ties between equally-good matches
+    # (so "Dune" surfaces the one people mean before the 1970s TV movie).
+    pinned.sort(key=lambda c: (c["_pin"] == "exact", c["_pin_sim"],
+                               ranking.quality_prior(_rating(c), c.get("votes", 0))),
+                reverse=True)
+    for c in pinned:
+        c.pop("_pin_sim", None)
+    return pinned[:limit]
 
 
-def _score_for_ui(rank: int, total: int) -> int:
-    """Rank-based %MATCH — fallback only, used when no reranker score exists."""
-    if total <= 1:
-        return 99
-    return int(99 - (rank / max(total - 1, 1)) * 39)
+def _score_cards(query: str, cards: list[dict], cosines: dict = None,
+                 fused: dict = None, ceiling: float = 1.0) -> list[dict]:
+    """Attach a real relevance to every card, order by it, and set the %MATCH badge.
 
+    Relevance comes from the strongest available CONTENT signal, in order:
+       1. cross-encoder logit   (best: reads the query against the text)
+       2. dense cosine          (absolute similarity, always available)
+       3. fused RRF score       (rank-only, last resort — see ranking.py)
 
-def _sigmoid(x: float) -> float:
-    import math
-    if x <= -30:
-        return 0.0
-    if x >= 30:
-        return 1.0
-    return 1.0 / (1.0 + math.exp(-x))
-
-
-# Calibration for the cross-encoder logit -> %MATCH. Raw sigmoid collapses
-# (short/vague queries score uniformly negative -> everything ~0%), so we shift
-# and temperature-scale first. Tuned on ms-marco-MiniLM logits so an irrelevant
-# hit (~-11) reads ~30%, a borderline one (~-3) ~70%, and a strong match (~+3+)
-# ~90%+ — an honest spread rather than a fake 99% for the top of every list.
-_CAL_SHIFT = 7.0
-_CAL_TEMP = 4.6
-
-
-def _calibrate_scores(query: str, cards: list[dict], logit_key: str = "rerank") -> None:
-    """Attach a genuine `score` (% MATCH) to each card from the cross-encoder
-    relevance logit (sigmoid -> probability), so the badge reflects how well a
-    result actually matches the query — not merely its rank position.
-
-    Cards missing a logit (e.g. exact/prefix title pins that bypassed the
-    reranker) are scored on the spot. Exact/prefix pins are floored high (you
-    typed the name), other results are capped just below so the pins still read
-    as the strongest. Falls back to rank-based % only when the reranker is off.
+    Ordering then blends in a vote-shrunk quality prior, so between two equally
+    relevant titles the one people have actually watched wins, while a popular
+    title that does not match cannot climb over one that does.
     """
-    missing = [c for c in cards if logit_key not in c]
-    cross = _get_cross_encoder() if (ENABLE_RERANK and missing) else None
+    if not cards:
+        return []
+    cosines, fused = cosines or {}, fused or {}
+
+    # One batched cross-encoder pass over the whole candidate set.
+    logits = {}
+    cross = _get_cross_encoder() if ENABLE_RERANK else None
     if cross is not None:
-        pairs = [[query, f"{c.get('title','')}. {c.get('description','')}"[:512]] for c in missing]
+        pairs = [[query, f"{c.get('title','')}. {c.get('description','')}"[:512]] for c in cards]
         try:
-            for c, s in zip(missing, cross.predict(pairs)):
-                c[logit_key] = float(s)
+            for c, s in zip(cards, cross.predict(pairs)):
+                logits[str(c.get("id"))] = float(s)
         except Exception as e:  # noqa: BLE001
-            print(f"⚠️  Score calibration failed: {e}")
-    for i, c in enumerate(cards):
-        if logit_key in c:
-            pct = round(_sigmoid((c[logit_key] + _CAL_SHIFT) / _CAL_TEMP) * 100)
-            pin = c.get("_pin")
-            if pin == "exact":
-                pct = max(pct, 97)
-            elif pin == "prefix":
-                pct = max(pct, 88)
-            else:
-                pct = min(pct, 96)
-            c["score"] = max(3, min(99, pct))
+            print(f"⚠️  Rerank failed, falling back to cosine relevance: {e}")
+
+    for c in cards:
+        cid = str(c.get("id"))
+        if cid in logits:
+            rel = ranking.relevance_from_logit(logits[cid])
+        elif cid in cosines:
+            rel = ranking.relevance_from_cosine(cosines[cid])
         else:
-            c["score"] = _score_for_ui(i, len(cards))
-        c.pop(logit_key, None)
-        c.pop("_pin", None)
+            rel = ranking.relevance_from_rrf(fused.get(cid, 0.0), ceiling)
+        c["_rel"] = rel
+        c["_order"] = ranking.blend_score(rel, _rating(c), c.get("votes", 0))
+
+    # Title pins always lead: if you typed the name, that IS the answer.
+    cards.sort(key=lambda c: (c.get("_pin") == "exact", c.get("_pin") == "prefix",
+                              c["_order"]), reverse=True)
+    for c in cards:
+        c["score"] = ranking.match_percent(c["_rel"], c.get("_pin"))
+        for k in ("_rel", "_order", "_pin"):
+            c.pop(k, None)
+    return cards
 
 
 def hybrid_search(text: str, top_k: int = 12, prefetch: int = 60, qfilter=None) -> list[dict]:
@@ -330,61 +309,71 @@ def hybrid_search(text: str, top_k: int = 12, prefetch: int = 60, qfilter=None) 
     Optional `qfilter` (from build_filter) restricts by category/rating/year.
     Returns frontend-ready card dicts.
     """
-    from qdrant_client import models
-
     client = get_qdrant()
-    dense = embed_query(text)
 
-    prefetches = [models.Prefetch(query=dense, using=DENSE_VECTOR, limit=prefetch, filter=qfilter)]
-    if ENABLE_SPARSE:
-        try:
-            prefetches.append(
-                models.Prefetch(query=sparse_query(text), using=SPARSE_VECTOR, limit=prefetch, filter=qfilter)
-            )
-        except Exception as e:  # noqa: BLE001 - sparse is best-effort
-            print(f"⚠️  Sparse query failed, dense-only: {e}")
+    # Each channel is queried SEPARATELY rather than through Qdrant's built-in
+    # RRF prefetch. Server-side fusion returns only a fused rank, which throws
+    # away the dense cosine — and the cosine is the one absolute relevance signal
+    # available without a reranker. Two round trips buys honest %MATCH numbers
+    # and per-channel weights that Qdrant's fusion does not expose.
+    channels: dict[str, list[str]] = {}
+    cards: dict[str, dict] = {}
+    cosines: dict[str, float] = {}
 
     try:
-        if len(prefetches) > 1:
-            response = client.query_points(
-                collection_name=COLLECTION_NAME,
-                prefetch=prefetches,
-                query=models.FusionQuery(fusion=models.Fusion.RRF),
-                limit=prefetch,
-                with_payload=True,
-            )
-        else:
-            response = client.query_points(
-                collection_name=COLLECTION_NAME,
-                query=dense,
-                using=DENSE_VECTOR,
-                query_filter=qfilter,
-                limit=prefetch,
-                with_payload=True,
-            )
+        dense_hits = client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=embed_query(text),
+            using=DENSE_VECTOR,
+            query_filter=qfilter,
+            limit=prefetch,
+            with_payload=True,
+        ).points
     except Exception as e:  # noqa: BLE001
         # Do NOT degrade to [] here: an unreachable/deleted collection must look
         # different from "your query matched nothing".
         raise EngineUnavailable(f"vector search failed: {e}") from e
 
-    hits = [_hit_to_dict(p) for p in response.points]
-    ranked = _rerank(text, hits)
+    for p in dense_hits:
+        cid = str(p.id)
+        cards[cid] = _hit_to_dict(p)
+        cosines[cid] = float(p.score)
+    channels["dense"] = [str(p.id) for p in dense_hits]
 
-    # Pin whole-DB exact/prefix title matches ahead of the semantic ranking.
-    pinned = _title_lookup(text, limit=top_k, qfilter=qfilter)
+    if ENABLE_SPARSE:
+        try:
+            sparse_hits = client.query_points(
+                collection_name=COLLECTION_NAME,
+                query=sparse_query(text),
+                using=SPARSE_VECTOR,
+                query_filter=qfilter,
+                limit=prefetch,
+                with_payload=True,
+            ).points
+            for p in sparse_hits:
+                cards.setdefault(str(p.id), _hit_to_dict(p))
+            channels["sparse"] = [str(p.id) for p in sparse_hits]
+        except Exception as e:  # noqa: BLE001 - sparse is best-effort
+            print(f"⚠️  Sparse query failed, dense-only: {e}")
 
-    final, seen = [], set()
-    for card in pinned + ranked:
+    fused = ranking.weighted_rrf(channels)
+    ceiling = ranking.rrf_ceiling(channels.keys())
+
+    # Whole-DB title matches, pinned regardless of where fusion placed them.
+    for card in _title_lookup(text, limit=top_k, qfilter=qfilter):
         cid = str(card.get("id"))
-        if cid in seen:
-            continue
-        seen.add(cid)
-        final.append(card)
-        if len(final) >= top_k:
-            break
+        if cid in cards:
+            cards[cid]["_pin"] = card["_pin"]
+        else:
+            cards[cid] = card
 
-    _calibrate_scores(text, final)
-    return final
+    # Trim to a working set by fused rank before the (expensive) rerank pass.
+    ordered = sorted(cards.values(),
+                     key=lambda c: (c.get("_pin") is not None,
+                                    fused.get(str(c.get("id")), 0.0)),
+                     reverse=True)[:max(top_k * 3, 30)]
+
+    return _score_cards(text, ordered, cosines, fused, ceiling)[:top_k]
 
 
 def recommend(
@@ -426,7 +415,10 @@ def recommend(
         if key in seen_titles:  # de-dup near-identical titles
             continue
         seen_titles.add(key)
-        card["score"] = _score_for_ui(len(results), top_k)
+        # Qdrant returns the cosine against the combined taste vector — a real
+        # similarity, so keep it rather than overwriting it with list position.
+        card["_cos"] = float(p.score)
+        card["score"] = ranking.match_percent(ranking.relevance_from_cosine(p.score))
         results.append(card)
         if len(results) >= top_k:
             break
@@ -459,29 +451,19 @@ def similar_items(item_id, top_k: int = 12) -> list[dict]:
     if not cands:
         return []
 
-    # Leave `_rr` UNSET when there is no reranker. Writing a constant 0.0 made
-    # _calibrate_scores turn every single card into the same sigmoid output
-    # (82%); without the key it falls back to rank-based scoring, which at least
-    # varies and reflects the vector ordering.
-    cross = _get_cross_encoder() if ENABLE_RERANK else None
-    if cross is not None:
-        pairs = [[src_text, f"{c.get('title','')}. {c.get('description','')}"[:512]] for c in cands]
-        try:
-            for c, s in zip(cands, cross.predict(pairs)):
-                c["_rr"] = float(s)
-        except Exception as e:  # noqa: BLE001
-            print(f"⚠️  Similar-items rerank failed, using vector order: {e}")
+    # Score against the SOURCE title's own text, so "similar" means thematically
+    # close rather than merely near in vector space. The per-candidate cosine
+    # from Qdrant recommend carries through as the relevance signal when no
+    # cross-encoder is loaded.
+    cosines = {str(c.get("id")): c.pop("_cos") for c in cands if "_cos" in c}
+    scored = _score_cards(src_text, cands, cosines)
 
-    # Same-medium first (group), then by rerank score within each group. Without
-    # a reranker every key is 0.0, so Python's stable sort preserves vector order.
-    cands.sort(key=lambda c: (
-        0 if (src_type and str(c.get("type", "")).upper() == src_type) else 1,
-        -c.get("_rr", 0.0),
-    ))
-
-    out = cands[:top_k]
-    _calibrate_scores(src_text, out, logit_key="_rr")
-    return out
+    # Prefer the same medium (Anime -> Anime), but only as a tiebreak: a much
+    # better match from another medium should still win.
+    scored.sort(key=lambda c: (c.get("score", 0)
+                               + (6 if str(c.get("type", "")).upper() == src_type else 0)),
+                reverse=True)
+    return scored[:top_k]
 
 
 def _hit_to_dict(point) -> dict:
@@ -557,7 +539,9 @@ def ground_with_llm(query: str, hits: list[dict], top_k: int = 12) -> list[dict]
             reason = str(entry.get("reason", "")).strip()
             if reason:
                 card["description"] = f"💡 {reason}\n\n{card.get('description', '')}".strip()
-            card["score"] = _score_for_ui(len(ranked), top_k)
+            # Keep the retrieval-derived %MATCH. The LLM reorders, but it has no
+            # relevance measurement of its own — overwriting the real score with
+            # the LLM's list position would throw away the only honest number.
             ranked.append(card)
             if len(ranked) >= top_k:
                 break
@@ -583,14 +567,19 @@ def get_by_ids(ids: list) -> list[dict]:
     return [by_id[str(i)] for i in ids if str(i) in by_id]
 
 
-def top_rated(top_k: int = 20, qfilter=None, min_rating: float = 7.5, max_rating: float = 9.2) -> list[dict]:
+def top_rated(top_k: int = 20, qfilter=None, min_rating: float = 6.5) -> list[dict]:
     """
-    Highest-rated titles (optionally filtered by category). Uses a rating window to
-    avoid obscure perfect-score shorts dominating. Needs the payload indexes build_catalogue.py creates.
+    Best titles by vote-shrunk rating (optionally filtered by category).
+
+    The previous version hid obscure perfect scores behind a hardcoded 7.5-9.2
+    rating window, which is a Bayesian prior written as a guess — and it threw
+    away every genuinely great title above 9.2. Now it pulls a generous
+    candidate pool and ranks it by `bayesian_rating`, so a 10/10 with four votes
+    sinks on its own merits and a 9.4 with 200k votes is allowed to win.
     """
     from qdrant_client import models
 
-    must = [models.FieldCondition(key="rating_f", range=models.Range(gte=min_rating, lte=max_rating))]
+    must = [models.FieldCondition(key="rating_f", range=models.Range(gte=min_rating))]
     if qfilter is not None and getattr(qfilter, "must", None):
         must += list(qfilter.must)
     try:
@@ -598,15 +587,17 @@ def top_rated(top_k: int = 20, qfilter=None, min_rating: float = 7.5, max_rating
             collection_name=COLLECTION_NAME,
             scroll_filter=models.Filter(must=must),
             order_by=models.OrderBy(key="rating_f", direction=models.Direction.DESC),
-            limit=top_k,
+            limit=max(top_k * 8, 200),  # wide pool; the prior does the real ranking
             with_payload=True,
         )
     except Exception as e:  # noqa: BLE001
         print(f"⚠️  top_rated failed (did you run build_catalogue.py?): {e}")
         return []
     out = [_hit_to_dict(p) for p in pts]
-    for i, h in enumerate(out):
-        h["score"] = _score_for_ui(i, len(out))
+    out.sort(key=lambda h: ranking.bayesian_rating(_rating(h), h.get("votes", 0)), reverse=True)
+    out = out[:top_k]
+    for h in out:
+        h["score"] = ranking.match_percent(ranking.quality_prior(_rating(h), h.get("votes", 0)))
     return out
 
 
@@ -636,8 +627,8 @@ def top_popular(top_k: int = 20, qfilter=None) -> list[dict]:
     if not pts:
         return top_rated(top_k=top_k, qfilter=qfilter)
     out = [_hit_to_dict(p) for p in pts]
-    for i, h in enumerate(out):
-        h["score"] = _score_for_ui(i, len(out))
+    for h in out:
+        h["score"] = ranking.match_percent(ranking.quality_prior(_rating(h), h.get("votes", 0)))
     return out
 
 

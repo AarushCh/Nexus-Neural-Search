@@ -19,7 +19,10 @@ jobs:
         # Only what the pure-logic tests need; fastembed/torch are not exercised here.
         run: pip install python-dotenv requests "qdrant-client>=1.16,<1.17"
       - name: Regression tests
-        run: python test_nexus.py
+        run: |
+          python test_ranking.py
+          python test_catalogue.py
+          python test_nexus.py
 
   frontend:
     runs-on: ubuntu-latest

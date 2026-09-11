@@ -18,7 +18,7 @@
 
 Ask Nexus for *"cyberpunk anime about identity"* **or** an exact title like *"Cyberpunk: Edgerunners"* — it handles both. Every query runs **hybrid retrieval** (dense semantic vectors + BM25 keyword matching), fuses the two with Reciprocal Rank Fusion, and **reranks with a cross-encoder** for final accuracy. On top of that sits a full product: user accounts, a personalized home feed, wishlist/favourites, search history, view tracking, and flagship detail pages with trailers, cast, and where-to-watch.
 
-The catalogue is **~6,850 mainstream titles**, each validated and enriched directly from TMDB (correct poster + backdrop, real overview/rating/genres, runtime, YouTube trailer, top cast, and streaming providers) — all stored in the Qdrant payload, so cards are correct by construction and detail pages load instantly.
+The catalogue targets **100,000+ titles**, built from TMDB's daily id exports and quality-gated on artwork, overview and vote count, then enriched with AniList's rank-weighted tags and IMDb ratings. Every card has a poster that passed a real resolution and aspect-ratio bar, so artwork is correct by construction and detail pages load instantly.
 
 ---
 
@@ -28,10 +28,18 @@ Every `internal` search:
 
 1. **Dense embedding** — the query is embedded with `BAAI/bge-small-en-v1.5` (384-dim), the *same* model used for the corpus.
 2. **Sparse embedding** — a BM25 sparse vector (FastEmbed, IDF modifier) captures exact keyword/title hits.
-3. **Fusion** — Qdrant's Query API fuses dense + sparse with **Reciprocal Rank Fusion (RRF)**.
-4. **Cross-encoder rerank** — `cross-encoder/ms-marco-MiniLM-L-6-v2` rescores the fused candidates. **Off by default** (`ENABLE_RERANK=false`): it needs `torch` + `sentence-transformers` (~600 MB) and OOMs on a 512 MB host. Turn it on wherever you have the RAM.
-5. **Exact-title pin** — a normalized exact title match is pinned to the top.
-6. **Match %** — with the reranker on, the relevance logit is temperature-scaled through a sigmoid into a calibrated 0–99 score (pins floored, everything else capped). With it off, the badge falls back to rank position.
+3. **Fusion** — dense and sparse are queried **separately** and fused with **weighted Reciprocal Rank Fusion** in `backend/ranking.py`. Qdrant's built-in RRF returns only a fused rank, which discards the dense cosine — and that cosine is the one absolute relevance signal available without a reranker. Doing it client-side also buys per-channel weights, which Qdrant's fusion does not expose.
+4. **Cross-encoder rerank** — `cross-encoder/ms-marco-MiniLM-L-6-v2` rescores the candidates. **Off by default** (`ENABLE_RERANK=false`): it needs `torch` + `sentence-transformers` (~600 MB) and OOMs on a 512 MB host. Turn it on wherever you have the RAM.
+5. **Title pinning** — token-set similarity, not string prefix, so `fellowship of the ring` and `star wars a new hope` resolve to the right title.
+6. **Ranking** — relevance is blended with a **vote-shrunk Bayesian quality prior** (the IMDb weighted-rating formula), log-linearly, so a popular title that *doesn't* match can never climb over one that does, while quality breaks ties between equally relevant results.
+
+### The %MATCH number
+
+The badge is a monotone function of genuine, content-based relevance — the cross-encoder logit when the reranker is on, the calibrated dense cosine otherwise — so **90% means the same strength of match in every query**.
+
+It is deliberately *not* derived from list position or from RRF. A rank-based score is content-blind: rank 3 of a pool of masterpieces and rank 3 of a pool of junk are the same number, which is why the old badge gave the top result 99% no matter how badly the query had gone. A hopeless query now honestly reads in the twenties all the way down.
+
+Every constant (`RRF_K`, channel weights, `QUALITY_WEIGHT`, the Bayesian prior, the cosine calibration band) is an env override, and `test_ranking.py` asserts the properties that must survive any retuning.
 
 Everything runs **locally** — no per-query external inference API. Qdrant itself is Qdrant Cloud.
 
@@ -61,7 +69,7 @@ Logged-out visitors get the four "Top …" rows.
 
 **Frontend:** **Next.js 16** (App Router, React 19, TypeScript) · React Context store · reactive HTML5 Canvas neural background · cyberpunk dark/light themes · standalone `/title/[id]` detail pages.
 
-**Data:** TMDB (harvest + validation + enrichment).
+**Data:** TMDB (daily id exports, keywords, credits, images, providers) · **AniList** (rank-weighted anime tags) · **IMDb** (ratings + vote counts).
 
 ---
 
@@ -71,7 +79,8 @@ Logged-out visitors get the four "Top …" rows.
 nexus-neural-search/
 ├── backend/
 │   ├── main.py          # FastAPI routes: search, feed, auth, wishlist, history, detail
-│   ├── engine.py        # Retrieval core: embeddings, hybrid search, rerank, recommend, RAG
+│   ├── engine.py        # Retrieval core: embeddings, hybrid search, recommend, RAG
+│   ├── ranking.py       # Ranking math: RRF, Bayesian quality, match calibration
 │   ├── auth.py          # JWT auth (SECRET_KEY from env)
 │   ├── database.py      # Env-driven DB: SQLite local, Postgres via DATABASE_URL
 │   └── models.py        # User, WishlistItem, SearchHistory, Interaction, MediaDetail
@@ -79,8 +88,15 @@ nexus-neural-search/
 │   ├── app/             # pages: / (search+feed), /title/[id] (detail), layout, globals.css
 │   ├── components/      # Feed, Card, DetailModal, AuthModal, Chrome, NeuralBg
 │   └── lib/             # api client, store (Context), types, image helpers, dice prompts
-├── build_catalogue.py   # TMDB pipeline: harvest → validate → enrich → embed → Qdrant
-├── test_nexus.py        # Regression + smoke tests (plain asserts: python test_nexus.py)
+├── catalogue/           # Dataset pipeline: ids → fetch → normalise → index
+│   ├── tmdb.py          # ID exports, detail fetch, poster/backdrop selection
+│   ├── tags.py          # Four-layer tag model + namespaces
+│   ├── enrich.py        # AniList ranked tags, IMDb ratings
+│   ├── schema.py        # Identity, quality gates, retrieval document
+│   └── build.py         # Resumable CLI (python -m catalogue.build all)
+├── test_ranking.py      # Ranking math property tests
+├── test_catalogue.py    # Pipeline tests (tags, gates, image selection)
+├── test_nexus.py        # Engine regression + smoke tests
 ├── debug.py             # One-shot engine sanity check
 ├── .github/workflows/   # CI (tests + frontend build) and the keep-alive ping
 ├── requirements.txt
@@ -115,13 +131,42 @@ OPENROUTER_API_KEY=...      # optional, enables Nemotron "API" mode
 
 ### 2. Build the catalogue
 
+Four resumable stages. Each writes to `data/`, so the expensive one is paid once.
+
 ```bash
-python build_catalogue.py                 # deep harvest, validate + enrich, upsert into Qdrant
-python build_catalogue.py --recreate      # wipe + rebuild the collection clean
-python build_catalogue.py --pages 120 --min-votes 80 --workers 20   # go wider
+python -m catalogue.build all --target 120000 --recreate
+
+# or stage by stage
+python -m catalogue.build ids         # enumerate every TMDB id from the daily export
+python -m catalogue.build fetch       # download details (resumable — safe to interrupt)
+python -m catalogue.build normalise   # join AniList + IMDb, tag, quality-gate
+python -m catalogue.build index       # embed + upsert into Qdrant
 ```
 
-This harvests mainstream titles across movies / TV / anime (genre 16 + Japanese origin, so Netflix anime like Edgerunners are caught) / documentaries, validates each (must have a poster + real overview), enriches with backdrop, trailer, top cast, and providers, and writes everything into the Qdrant payload.
+**Why the stages matter.** The previous builder paged TMDB's `/discover`, which is
+**hard-capped at page 500** — the ~6,850-title catalogue was a structural ceiling,
+not a setting, and no `--pages` value could pass it. Stage 1 instead reads TMDB's
+daily gzipped export of *every* id it holds (~1M movies, ~200k series), which is
+what makes 100k+ possible.
+
+`fetch` is the only expensive stage (one request per title, ~1–2 hours at 100k
+with 24 workers) and it is cached and resumable, so `normalise` can be re-run for
+free every time the tag rules change.
+
+**Quality is enforced, not assumed.** A title is only indexed if it has a poster
+that passes a real bar — TMDB's `/images` is fetched and every candidate is scored
+on resolution (≥500px so `w500` is never an upscale), aspect ratio (2:3, anything
+noticeably off-shape is rejected rather than CSS-cropped), community rating, and
+textless artwork — plus a ≥40-character overview, a release date, and a vote floor.
+`normalise` prints exactly how many titles each gate dropped and why.
+
+**Tags** come from TMDB `/keywords` (a curated theme vocabulary the old build never
+requested), AniList's **rank-weighted** tags for anime (`Cyberpunk 95, Tragedy 85` —
+the weight decides what reaches the embedding), and derived facets for era, origin,
+language, studio, franchise, certification and streaming provider. Everything is
+namespaced (`theme:dystopia`, `people:denis-villeneuve`, `studio:a24`) and indexed
+as a Qdrant keyword facet, so it is filterable and clickable rather than prose glued
+onto the overview.
 
 ### 3. Run the API
 

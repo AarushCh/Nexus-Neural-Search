@@ -10,13 +10,8 @@ configured, and are skipped otherwise so this stays useful in CI without secrets
 import os
 import sys
 
-from backend.engine import (
-    _calibrate_scores,
-    _normalize,
-    _score_for_ui,
-    collection_health,
-)
-from build_catalogue import dedupe_key, stable_id
+from backend.engine import _normalize, _score_cards, collection_health
+from catalogue.schema import dedupe_key, stable_id
 
 
 def test_stable_id_distinguishes_same_title():
@@ -39,35 +34,40 @@ def test_normalize():
     print("  ok  _normalize")
 
 
-def test_score_spread():
-    """Rank-based fallback must actually vary, and stay inside the badge range."""
-    scores = [_score_for_ui(i, 12) for i in range(12)]
-    assert scores[0] == 99
-    assert len(set(scores)) > 1, "every card showing the same % is the bug"
-    assert all(0 < s <= 99 for s in scores)
-    assert scores == sorted(scores, reverse=True)
-    print("  ok  _score_for_ui spreads")
-
-
-def test_calibrate_without_reranker_is_not_flat():
-    """Regression: /similar set _rr = 0.0 on every card when rerank was off, so
-    _calibrate_scores turned all of them into an identical 82% MATCH."""
-    cards = [{"title": f"T{i}", "description": "d"} for i in range(8)]
-    _calibrate_scores("query", cards, logit_key="_rr")
-    scores = [c["score"] for c in cards]
+def test_score_cards_reflects_similarity_not_position():
+    """Regression: /similar wrote a constant 0.0 logit on every card, so all of
+    them rendered an identical 82% MATCH. Scores must now track the cosine."""
+    cards = [{"id": f"c{i}", "title": f"T{i}", "description": "d", "rating": 7.0,
+              "votes": 5000} for i in range(6)]
+    cosines = {"c0": 0.88, "c1": 0.83, "c2": 0.78, "c3": 0.72, "c4": 0.66, "c5": 0.63}
+    out = _score_cards("query", cards, cosines)
+    scores = [c["score"] for c in out]
     assert len(set(scores)) > 1, f"flat scores are the 82% bug: {scores}"
-    assert all("_rr" not in c for c in cards), "internal keys must not leak to the UI"
-    print(f"  ok  _calibrate_scores varies without a reranker: {scores}")
+    assert scores == sorted(scores, reverse=True), scores
+    assert scores[0] > scores[-1] + 30, f"badge barely discriminates: {scores}"
+    assert all(k not in c for c in out for k in ("_rel", "_order", "_pin"))
+    print(f"  ok  _score_cards tracks similarity: {scores}")
 
 
-def test_calibrate_pins_rank_above_plain_hits():
-    """An exact title match must outrank an ordinary hit with the same logit."""
-    pinned = {"title": "Dune", "description": "d", "_rr": 0.0, "_pin": "exact"}
-    plain = {"title": "Other", "description": "d", "_rr": 0.0}
-    _calibrate_scores("dune", [pinned, plain], logit_key="_rr")
-    assert pinned["score"] > plain["score"], (pinned["score"], plain["score"])
-    assert "_pin" not in pinned
-    print("  ok  exact-title pins score above plain hits")
+def test_score_cards_is_query_independent():
+    """The same match strength must produce the same badge in any result set —
+    the old rank-based score gave the top hit 99% however bad the pool was."""
+    good = _score_cards("q", [{"id": "a", "title": "A", "rating": 7, "votes": 5000}],
+                        {"a": 0.87})[0]["score"]
+    poor = _score_cards("q", [{"id": "b", "title": "B", "rating": 7, "votes": 5000}],
+                        {"b": 0.64})[0]["score"]
+    assert good > 80 and poor < 40, (good, poor)
+    print(f"  ok  badges are absolute: strong-alone={good} weak-alone={poor}")
+
+
+def test_score_cards_pins_exact_title_first():
+    """Typing a title must put it top even when the vectors disagree."""
+    pinned = {"id": "p", "title": "Dune", "rating": 8.0, "votes": 900_000, "_pin": "exact"}
+    better_vector = {"id": "o", "title": "Other", "rating": 8.0, "votes": 900_000}
+    out = _score_cards("dune", [better_vector, pinned], {"p": 0.65, "o": 0.88})
+    assert out[0]["id"] == "p", [c["id"] for c in out]
+    assert out[0]["score"] > out[1]["score"]
+    print("  ok  exact-title pin leads regardless of vector order")
 
 
 def test_dedupe_key_keeps_remakes():
