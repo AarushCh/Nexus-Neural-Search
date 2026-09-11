@@ -32,7 +32,18 @@ async function req(path: string, init: RequestInit = {}): Promise<Response> {
     const timer = setTimeout(() => ctrl.abort(), cold ? COLD_TIMEOUT : WARM_TIMEOUT);
     if (cold) setWaking(true);
     try {
-      return await fetch(`${API_URL}${path}`, { ...init, signal: ctrl.signal });
+      const res = await fetch(`${API_URL}${path}`, { ...init, signal: ctrl.signal });
+      // 502/504 come from Render's proxy, not from the app: the worker is
+      // restarting or was just OOM-killed. They are never an answer, so the
+      // first one is worth one patient retry rather than a dead-end error —
+      // which is what the user saw as "CANNOT REACH THE NEURAL CORE". 503 is
+      // deliberately NOT retried: that one IS the app, telling us the index is
+      // empty, and hammering it would only delay an honest message.
+      if ((res.status === 502 || res.status === 504) && attempt === 0) {
+        lastErr = new Error("GATEWAY");
+        continue;
+      }
+      return res;
     } catch (e) {
       lastErr = e;
     } finally {
