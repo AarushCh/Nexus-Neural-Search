@@ -30,13 +30,16 @@ export function Sidebar({
   onNav: (view: "search" | "wishlist" | "history" | "about") => void;
   onLogin: () => void;
 }) {
-  const { user, token, online, logout } = useStore();
+  const { user, token, online, waking, logout } = useStore();
   return (
     <div id="sidebar" className={`sidebar ${open ? "open" : ""}`}>
       <div className="hud-header">SYSTEM HUD</div>
       <div className="status-box">
-        <div className="status-indicator" style={{ background: online ? "#00ff9d" : "#ff0055" }} />
-        <span>{online ? "ONLINE" : "OFFLINE"}</span>
+        <div
+          className="status-indicator"
+          style={{ background: waking ? "#ffb800" : online ? "#00ff9d" : "#ff0055" }}
+        />
+        <span>{waking ? "WAKING" : online ? "ONLINE" : "OFFLINE"}</span>
       </div>
       <div className="nav-menu">
         <div className="nav-item active" onClick={() => onNav("search")}>NEURAL SEARCH</div>

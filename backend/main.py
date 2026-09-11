@@ -15,19 +15,26 @@ and a TMDB-enriched title detail endpoint.
 
 import json
 import os
+import time
 from datetime import datetime
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.auth import get_current_user_db, hash_password, login_user
 from backend.database import Base, SessionLocal, engine
 from backend.engine import (
+    DENSE_MODEL,
+    ENABLE_RERANK,
+    ENABLE_SPARSE,
+    EngineUnavailable,
     build_filter,
+    collection_health,
     enrich_detail,
     for_you,
     get_by_ids,
@@ -40,15 +47,26 @@ from backend.models import Interaction, MediaDetail, SearchHistory, User, Wishli
 
 app = FastAPI(title="Nexus Neural Search")
 
+# "*" and allow_credentials=True is an invalid pair that browsers reject, so only
+# send credentials when the deployment has named its real origins.
+_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
-    allow_credentials=True,
+    allow_origins=_origins,
+    allow_credentials=_origins != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 Base.metadata.create_all(bind=engine)
+
+
+@app.exception_handler(EngineUnavailable)
+def _engine_unavailable(request: Request, exc: EngineUnavailable):
+    """503, not a 200 with an empty list. The frontend can then say 'search is
+    down' instead of 'no results', which is what hid the deleted collection."""
+    print(f"❌ EngineUnavailable on {request.url.path}: {exc}")
+    return JSONResponse(status_code=503, content={"detail": "Search index unavailable"})
 
 
 def get_db():
@@ -59,16 +77,44 @@ def get_db():
         db.close()
 
 
+# --- Rate limiting ------------------------------------------------------------
+# In-memory sliding window. Single Render instance, so a dict is enough; swap for
+# Redis only if this ever runs multi-process.
+_hits: dict[str, list[float]] = {}
+
+
+def _rate_limit(key: str, limit: int, window: float) -> None:
+    now = time.monotonic()
+    recent = [t for t in _hits.get(key, []) if now - t < window]
+    if len(recent) >= limit:
+        raise HTTPException(status_code=429, detail="Too many requests — slow down.")
+    recent.append(now)
+    _hits[key] = recent
+    if len(_hits) > 5000:  # cheap prune so an attacker can't grow this forever
+        for k in [k for k, v in _hits.items() if not v or now - v[-1] > 3600]:
+            _hits.pop(k, None)
+
+
+def limit(count: int, window: float = 60.0):
+    """Dependency factory: `Depends(limit(30))` = 30 requests/min per IP+route."""
+    def dep(request: Request) -> None:
+        ip = request.client.host if request.client else "unknown"
+        _rate_limit(f"{request.url.path}:{ip}", count, window)
+    return dep
+
+
 # --- Schemas ------------------------------------------------------------------
 
 class SearchRequest(BaseModel):
-    text: str
-    top_k: int = 12
+    # Bounds are enforced here so a crafted body can't ask for a 100k-wide
+    # prefetch or push a novel through the embedding model.
+    text: str = Field(min_length=1, max_length=500)
+    top_k: int = Field(default=12, ge=1, le=60)
     model: str = "internal"
     category: Optional[str] = None
-    min_rating: Optional[float] = None
-    year_min: Optional[int] = None
-    year_max: Optional[int] = None
+    min_rating: Optional[float] = Field(default=None, ge=0, le=10)
+    year_min: Optional[int] = Field(default=None, ge=1870, le=2100)
+    year_max: Optional[int] = Field(default=None, ge=1870, le=2100)
 
 
 class AuthRequest(BaseModel):
@@ -90,16 +136,38 @@ class InteractionRequest(BaseModel):
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "engine": "hybrid+rerank"}
+    """Reports what is ACTUALLY running, and 503s when the index is empty.
+
+    The old version returned a hardcoded {"engine": "hybrid+rerank"} whatever the
+    real state was, so a deleted Qdrant collection still read as healthy while
+    every search silently returned nothing.
+    """
+    vec = collection_health()
+    body = {
+        "status": "online" if vec["ok"] else "degraded",
+        "engine": "hybrid+rerank" if ENABLE_RERANK else "hybrid",
+        "rerank": ENABLE_RERANK,
+        "sparse": ENABLE_SPARSE,
+        "dense_model": DENSE_MODEL,
+        "llm": bool(os.getenv("OPENROUTER_API_KEY")),
+        "collection": vec["collection"],
+        "points": vec["points"],
+    }
+    if not vec["ok"]:
+        body["error"] = vec["error"]
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 @app.post("/login")
-def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db),
+          _: None = Depends(limit(10, 300))):
     return login_user(form, db)
 
 
 @app.post("/signup")
-def signup(data: AuthRequest, db: Session = Depends(get_db)):
+def signup(data: AuthRequest, db: Session = Depends(get_db),
+           _: None = Depends(limit(5, 3600))):
     if db.query(User).filter(User.username == data.username).first():
         raise HTTPException(status_code=400, detail="Username taken")
     if db.query(User).filter(User.email == data.email).first():
@@ -131,12 +199,13 @@ def _search(req: SearchRequest) -> list[dict]:
 
 
 @app.post("/recommend")
-def recommend_route(req: SearchRequest):
+def recommend_route(req: SearchRequest, _: None = Depends(limit(40))):
     return _search(req)
 
 
 @app.post("/recommend/personalized")
-def personalized(req: SearchRequest, user=Depends(get_current_user_db), db: Session = Depends(get_db)):
+def personalized(req: SearchRequest, user=Depends(get_current_user_db), db: Session = Depends(get_db),
+                 _: None = Depends(limit(40))):
     """Log the search for history, then return PURE query relevance.
 
     Explicit search is never personalized — favouriting horror must not bleed
@@ -193,7 +262,7 @@ def feed(user=Depends(get_current_user_db), db: Session = Depends(get_db)):
               .order_by(WishlistItem.added_at.desc()).limit(40).all()]
     favs = get_by_ids(wl_ids)
     if favs:
-        rows.append({"title": "Your Favourites", "items": _patch_posters(_dedupe(favs))})
+        rows.append({"title": "Your Favourites", "items": _patch_posters(_dedupe(favs), db)})
 
     if profile:
         fy = for_you(profile, negative_ids=_dismissed_ids(user.id, db), top_k=20, exclude_ids=set(profile))
@@ -210,31 +279,55 @@ def feed(user=Depends(get_current_user_db), db: Session = Depends(get_db)):
         Interaction.created_at.desc()).limit(40).all()
     recent = get_by_ids([v.media_id for v in views])
     if recent:
-        rows.append({"title": "Recently Viewed", "items": _patch_posters(_dedupe(recent))})
+        rows.append({"title": "Recently Viewed", "items": _patch_posters(_dedupe(recent), db)})
 
-    rows += _popular_rows()
+    rows += _cached_popular_rows()
     return rows
 
 
 @app.get("/discover")
 def discover():
-    """Anonymous landing feed (no auth) = most-voted (mainstream) rows per category."""
-    return _popular_rows()
+    """Anonymous landing feed (no auth) = most-voted (mainstream) rows per category.
+
+    Identical for every logged-out visitor, so it is cached: uncached this was 4
+    Qdrant scrolls + 4 Postgres connections on every single page load.
+    """
+    return _cached_popular_rows()
 
 
-def _patch_posters(items: list[dict]) -> list[dict]:
+_POPULAR_TTL = float(os.getenv("DISCOVER_TTL", 300))
+_popular_cache: dict = {"at": 0.0, "rows": None}
+
+
+def _cached_popular_rows() -> list[dict]:
+    now = time.monotonic()
+    if _popular_cache["rows"] is None or now - _popular_cache["at"] > _POPULAR_TTL:
+        rows = _popular_rows()
+        if rows:  # never cache an empty feed — that's the index being down
+            _popular_cache.update(at=now, rows=rows)
+        return rows
+    return _popular_cache["rows"]
+
+
+def _patch_posters(items: list[dict], db: Optional[Session] = None) -> list[dict]:
     """Override stored (often wrong/missing) images with corrected TMDB posters
     from the MediaDetail cache. Fixes Recently Viewed / feed / search posters
-    (e.g. 'Another Life' no longer shows the Re:Zero art) once a title is enriched."""
+    (e.g. 'Another Life' no longer shows the Re:Zero art) once a title is enriched.
+
+    Pass the request-scoped `db` when there is one; only the unauthenticated
+    paths fall back to opening their own session.
+    """
     if not items:
         return items
     ids = [str(it.get("id")) for it in items]
-    db = SessionLocal()
+    own_session = db is None
+    db = db or SessionLocal()
     try:
         rows = db.query(MediaDetail.media_id, MediaDetail.poster).filter(
             MediaDetail.media_id.in_(ids), MediaDetail.poster.isnot(None)).all()
     finally:
-        db.close()
+        if own_session:
+            db.close()
     posters = {mid: p for mid, p in rows if p}
     for it in items:
         p = posters.get(str(it.get("id")))
@@ -260,11 +353,16 @@ def _dedupe(items: list[dict]) -> list[dict]:
 
 def _popular_rows() -> list[dict]:
     rows = []
-    for cat, label in [("MOVIE", "Top Movies"), ("TV", "Top TV"),
-                       ("ANIME", "Top Anime"), ("DOCUMENTARY", "Top Documentaries")]:
-        items = _patch_posters(_dedupe(top_popular(top_k=24, qfilter=build_filter(category=cat))))
-        if items:
-            rows.append({"title": label, "items": items[:20]})
+    db = SessionLocal()  # one session for all four rows, not one per row
+    try:
+        for cat, label in [("MOVIE", "Top Movies"), ("TV", "Top TV"),
+                           ("ANIME", "Top Anime"), ("DOCUMENTARY", "Top Documentaries")]:
+            items = _patch_posters(
+                _dedupe(top_popular(top_k=24, qfilter=build_filter(category=cat))), db)
+            if items:
+                rows.append({"title": label, "items": items[:20]})
+    finally:
+        db.close()
     return rows
 
 
@@ -373,22 +471,6 @@ def get_wishlist(u=Depends(get_current_user_db), db: Session = Depends(get_db)):
     ids = [i.media_id for i in db.query(WishlistItem).filter_by(user_id=u.id)
            .order_by(WishlistItem.added_at.desc()).all()]
     return get_by_ids(ids)
-
-
-# --- helpers ------------------------------------------------------------------
-
-def _interleave(primary: list[dict], secondary: list[dict], limit: int) -> list[dict]:
-    out, seen = [], set()
-    for a, b in zip(primary, secondary + [None] * len(primary)):
-        for item in (a, b):
-            if item and str(item.get("id")) not in seen:
-                seen.add(str(item["id"]))
-                out.append(item)
-    for item in primary + secondary:
-        if str(item.get("id")) not in seen:
-            seen.add(str(item["id"]))
-            out.append(item)
-    return out[:limit]
 
 
 if __name__ == "__main__":

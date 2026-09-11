@@ -59,6 +59,15 @@ if QDRANT_URL.startswith("ttps://"):  # tolerate the old typo'd .env value
     QDRANT_URL = QDRANT_URL.replace("ttps://", "https://", 1)
 
 
+class EngineUnavailable(RuntimeError):
+    """The vector store could not be reached or the collection is missing.
+
+    Raised instead of returning [] so the API can answer 503 rather than a 200
+    with an empty list — "the index is gone" and "no results for your query"
+    used to be indistinguishable from the browser.
+    """
+
+
 # --- Lazy singletons ----------------------------------------------------------
 
 _lock = threading.Lock()
@@ -81,6 +90,24 @@ def _qdrant_singleton():
         return QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=60)
     # Local fallback for offline dev.
     return QdrantClient(path=os.getenv("QDRANT_PATH", "qdrant_storage"))
+
+
+def collection_health() -> dict:
+    """Real state of the vector store, for the /health endpoint.
+
+    An empty or missing collection is a FAILURE, not an empty result set — a
+    deleted Qdrant cluster previously showed up as a silently empty UI.
+    """
+    try:
+        client = get_qdrant()
+        if not client.collection_exists(COLLECTION_NAME):
+            return {"ok": False, "points": 0, "collection": COLLECTION_NAME,
+                    "error": "collection missing"}
+        points = client.count(COLLECTION_NAME, exact=False).count
+        return {"ok": points > 0, "points": points, "collection": COLLECTION_NAME,
+                "error": None if points else "collection empty"}
+    except Exception as e:  # noqa: BLE001 - health must never raise
+        return {"ok": False, "points": 0, "collection": COLLECTION_NAME, "error": str(e)}
 
 
 def _get_dense():
@@ -179,7 +206,7 @@ def _rerank(query: str, hits: list[dict]) -> list[dict]:
 
 
 def build_filter(category=None, min_rating=None, year_min=None, year_max=None):
-    """Assemble a Qdrant payload filter for server-side faceting (needs build_indexes.py)."""
+    """Assemble a Qdrant payload filter for server-side faceting (indexes come from build_catalogue.py)."""
     from qdrant_client import models
 
     must = []
@@ -336,8 +363,9 @@ def hybrid_search(text: str, top_k: int = 12, prefetch: int = 60, qfilter=None) 
                 with_payload=True,
             )
     except Exception as e:  # noqa: BLE001
-        print(f"❌ Qdrant query failed: {e}")
-        return []
+        # Do NOT degrade to [] here: an unreachable/deleted collection must look
+        # different from "your query matched nothing".
+        raise EngineUnavailable(f"vector search failed: {e}") from e
 
     hits = [_hit_to_dict(p) for p in response.points]
     ranked = _rerank(text, hits)
@@ -387,8 +415,7 @@ def recommend(
             with_payload=True,
         )
     except Exception as e:  # noqa: BLE001
-        print(f"❌ Qdrant recommend failed: {e}")
-        return []
+        raise EngineUnavailable(f"vector recommend failed: {e}") from e
 
     results, seen_titles = [], set()
     for p in response.points:
@@ -420,8 +447,7 @@ def similar_items(item_id, top_k: int = 12) -> list[dict]:
     try:
         got = client.retrieve(COLLECTION_NAME, ids=[item_id], with_payload=True)
     except Exception as e:  # noqa: BLE001
-        print(f"❌ retrieve failed in similar_items: {e}")
-        return []
+        raise EngineUnavailable(f"retrieve failed: {e}") from e
     if not got:
         return []
 
@@ -433,24 +459,24 @@ def similar_items(item_id, top_k: int = 12) -> list[dict]:
     if not cands:
         return []
 
+    # Leave `_rr` UNSET when there is no reranker. Writing a constant 0.0 made
+    # _calibrate_scores turn every single card into the same sigmoid output
+    # (82%); without the key it falls back to rank-based scoring, which at least
+    # varies and reflects the vector ordering.
     cross = _get_cross_encoder() if ENABLE_RERANK else None
     if cross is not None:
         pairs = [[src_text, f"{c.get('title','')}. {c.get('description','')}"[:512]] for c in cands]
         try:
-            scores = cross.predict(pairs)
-            for c, s in zip(cands, scores):
+            for c, s in zip(cands, cross.predict(pairs)):
                 c["_rr"] = float(s)
-        except Exception:  # noqa: BLE001
-            for c in cands:
-                c["_rr"] = 0.0
-    else:
-        for c in cands:
-            c["_rr"] = 0.0
+        except Exception as e:  # noqa: BLE001
+            print(f"⚠️  Similar-items rerank failed, using vector order: {e}")
 
-    # Same-medium first (group), then by rerank score within each group.
+    # Same-medium first (group), then by rerank score within each group. Without
+    # a reranker every key is 0.0, so Python's stable sort preserves vector order.
     cands.sort(key=lambda c: (
         0 if (src_type and str(c.get("type", "")).upper() == src_type) else 1,
-        -c["_rr"],
+        -c.get("_rr", 0.0),
     ))
 
     out = cands[:top_k]
@@ -560,7 +586,7 @@ def get_by_ids(ids: list) -> list[dict]:
 def top_rated(top_k: int = 20, qfilter=None, min_rating: float = 7.5, max_rating: float = 9.2) -> list[dict]:
     """
     Highest-rated titles (optionally filtered by category). Uses a rating window to
-    avoid obscure perfect-score shorts dominating. Needs build_indexes.py first.
+    avoid obscure perfect-score shorts dominating. Needs the payload indexes build_catalogue.py creates.
     """
     from qdrant_client import models
 
@@ -576,7 +602,7 @@ def top_rated(top_k: int = 20, qfilter=None, min_rating: float = 7.5, max_rating
             with_payload=True,
         )
     except Exception as e:  # noqa: BLE001
-        print(f"⚠️  top_rated failed (did you run build_indexes.py?): {e}")
+        print(f"⚠️  top_rated failed (did you run build_catalogue.py?): {e}")
         return []
     out = [_hit_to_dict(p) for p in pts]
     for i, h in enumerate(out):
@@ -588,7 +614,7 @@ def top_popular(top_k: int = 20, qfilter=None) -> list[dict]:
     """
     Most mainstream titles = highest `votes` (vote_count). Only items harvested
     with a vote count qualify, so this naturally returns recognizable titles with
-    working TMDB posters (see harvest_popular.py). Falls back to top_rated if the
+    working TMDB posters (see build_catalogue.py). Falls back to top_rated if the
     votes index isn't populated yet.
     """
     from qdrant_client import models

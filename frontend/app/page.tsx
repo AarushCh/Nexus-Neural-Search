@@ -9,6 +9,7 @@ import AuthModal from "@/components/AuthModal";
 import DetailModal from "@/components/DetailModal";
 import Feed from "@/components/Feed";
 import Card from "@/components/Card";
+import { randomPrompt } from "@/lib/prompts";
 
 const CATS = [
   { id: "ALL", label: "ALL" },
@@ -17,17 +18,20 @@ const CATS = [
   { id: "ANIME", label: "ANIME" },
   { id: "DOCUMENTARY", label: "DOCS" },
 ];
-const RANDOM = ["Cyberpunk Anime", "80s Horror", "Deep Space Sci-Fi", "Noir Mystery", "Cozy slice of life", "Mind-bending thriller"];
 
 type View = "home" | "results" | "wishlist" | "similar";
+// Why a result grid is empty. "No matches" and "the backend is down" used to
+// render identically as NO PATTERNS FOUND.
+type Problem = null | "none" | "index" | "timeout" | "offline";
 
 export default function Home() {
-  const { token, model, online, toast, toastMsg } = useStore();
+  const { token, model, online, waking, checkHealth, logout, toast, toastMsg } = useStore();
 
   const [view, setView] = useState<View>("home");
   const [feedRows, setFeedRows] = useState<FeedRow[]>([]);
   const [results, setResults] = useState<Media[]>([]);
   const [loading, setLoading] = useState(false);
+  const [problem, setProblem] = useState<Problem>(null);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("ALL");
   const [minRating, setMinRating] = useState(0);
@@ -77,6 +81,7 @@ export default function Home() {
       setQuery(q);
       setView("results");
       setLoading(true);
+      setProblem(null);
       setSidebar(false);
       // Persist the search in the URL so opening a detail page and pressing
       // Back restores this exact results view instead of dropping to home.
@@ -84,17 +89,31 @@ export default function Home() {
       if (cat && cat !== "ALL") p.set("cat", cat);
       if (rating) p.set("rating", String(rating));
       window.history.replaceState({}, "", `/?${p.toString()}`);
+      const filters = buildFilters(cat, rating);
       try {
-        const data = await api.search(q, { model, token, filters: buildFilters(cat, rating) });
+        let data: Media[];
+        try {
+          data = await api.search(q, { model, token, filters });
+        } catch (e) {
+          // An expired JWT used to dead-end here with an empty grid. A search
+          // doesn't need auth, so drop the stale token and just run it anonymously.
+          if ((e as Error).message !== "UNAUTHORIZED") throw e;
+          logout();
+          toast("Session expired — searching as guest");
+          data = await api.search(q, { model, token: null, filters });
+        }
         setResults(data);
+        setProblem(data.length ? null : "none");
       } catch (e) {
-        if ((e as Error).message === "UNAUTHORIZED") toast("Session expired — please log in again");
+        const msg = (e as Error).message;
         setResults([]);
+        setProblem(msg === "INDEX_DOWN" ? "index" : msg === "TIMEOUT" ? "timeout" : "offline");
+        checkHealth();
       } finally {
         setLoading(false);
       }
     },
-    [category, minRating, model, token, toast]
+    [category, minRating, model, token, toast, logout, checkHealth]
   );
 
   const openSimilar = useCallback(async (m: Media) => {
@@ -102,10 +121,15 @@ export default function Home() {
     setView("similar");
     setSimilarTitle(m.title);
     setLoading(true);
+    setProblem(null);
     try {
-      setResults(await api.similar(String(m.id)));
-    } catch {
+      const data = await api.similar(String(m.id));
+      setResults(data);
+      setProblem(data.length ? null : "none");
+    } catch (e) {
+      const msg = (e as Error).message;
       setResults([]);
+      setProblem(msg === "INDEX_DOWN" ? "index" : msg === "TIMEOUT" ? "timeout" : "offline");
     } finally {
       setLoading(false);
     }
@@ -202,7 +226,9 @@ export default function Home() {
       <div className={`main-container ${sidebar ? "menu-open" : ""}`} style={sidebar ? { filter: "blur(5px) brightness(.5)" } : undefined}>
         <div className="hero">
           <h1 className="cyber-glitch" data-text="NEXUS">NEXUS</h1>
-          <div className="subtitle">Multimodal Intelligence Engine v10 · {online ? "ONLINE" : "OFFLINE"}</div>
+          <div className="subtitle">
+            Multimodal Intelligence Engine v10 · {waking ? "WAKING…" : online ? "ONLINE" : "OFFLINE"}
+          </div>
         </div>
 
         <div className="search-container">
@@ -216,7 +242,7 @@ export default function Home() {
               onKeyDown={(e) => e.key === "Enter" && runSearch((e.target as HTMLInputElement).value)}
             />
             <button className="icon-btn dice-btn" title="Random" onClick={() => {
-              const q = RANDOM[Math.floor(Math.random() * RANDOM.length)];
+              const q = randomPrompt();
               if (inputRef.current) inputRef.current.value = q;
               runSearch(q);
             }}>🎲</button>
@@ -272,11 +298,23 @@ export default function Home() {
           <div className="results-grid">
             {loading ? (
               <h2 style={{ gridColumn: "1/-1", textAlign: "center", color: "var(--neon-blue)" }}>
-                {view === "similar" ? "VECTOR TRIANGULATION…" : "NEURAL SCAN IN PROGRESS…"}
+                {waking
+                  ? "WAKING THE NEURAL CORE… THIS TAKES ~40s AFTER IDLE"
+                  : view === "similar"
+                  ? "VECTOR TRIANGULATION…"
+                  : "NEURAL SCAN IN PROGRESS…"}
               </h2>
             ) : shown.length === 0 ? (
               <h3 style={{ gridColumn: "1/-1", textAlign: "center" }}>
-                {view === "wishlist" ? "YOUR WISHLIST IS EMPTY" : "NO PATTERNS FOUND"}
+                {view === "wishlist"
+                  ? "YOUR WISHLIST IS EMPTY"
+                  : problem === "index"
+                  ? "SEARCH INDEX OFFLINE — THE CATALOGUE IS REBUILDING"
+                  : problem === "timeout"
+                  ? "CORE STILL WAKING — RUN THAT SEARCH AGAIN"
+                  : problem === "offline"
+                  ? "CANNOT REACH THE NEURAL CORE — CHECK YOUR CONNECTION"
+                  : "NO PATTERNS FOUND"}
               </h3>
             ) : (
               shown.map((item) => (

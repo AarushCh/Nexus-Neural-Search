@@ -23,6 +23,7 @@ import re
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -33,7 +34,21 @@ from backend.engine import (
     COLLECTION_NAME, DENSE_VECTOR, SPARSE_VECTOR, VECTOR_SIZE,
     embed_docs, get_qdrant, sparse_docs,
 )
-from ingest import stable_id
+
+
+def stable_id(kind: str, tmdb_id: int) -> str:
+    """Deterministic point id keyed on the TMDB identity.
+
+    This used to hash the lowercased TITLE, which meant Dune (1984) and Dune
+    (2021), The Office (UK) and The Office (US), and every remake collapsed onto
+    a single point — the catalogue could not physically hold both.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"tmdb:{kind}:{int(tmdb_id)}"))
+
+
+def dedupe_key(title: str, year) -> tuple:
+    """Collapse genuine duplicates without collapsing remakes (title alone did)."""
+    return (re.sub(r"[^a-z0-9]+", "", str(title).lower()), str(year or ""))
 
 try:  # Windows consoles default to cp1252 and choke on emoji in progress logs.
     sys.stdout.reconfigure(encoding="utf-8")
@@ -200,7 +215,10 @@ def ensure_collection(client):
             vectors_config={DENSE_VECTOR: models.VectorParams(size=VECTOR_SIZE, distance=models.Distance.COSINE)},
             sparse_vectors_config={SPARSE_VECTOR: models.SparseVectorParams(modifier=models.Modifier.IDF)},
         )
-    for field, schema in [("title", models.PayloadSchemaType.TEXT),
+    # `title` must be lowercase-tokenised: _title_lookup() matches user queries
+    # against it to pin exact/prefix title hits above the semantic ranking.
+    for field, schema in [("title", models.TextIndexParams(
+                              type=models.TextIndexType.TEXT, lowercase=True)),
                           ("category", models.PayloadSchemaType.KEYWORD),
                           ("rating_f", models.PayloadSchemaType.FLOAT),
                           ("year_i", models.PayloadSchemaType.INTEGER),
@@ -236,11 +254,14 @@ def main():
             if done % 500 == 0:
                 print(f"   enriched {done}/{len(found)} (kept {kept})")
 
-    # Dedup by normalized title, keeping the highest-voted version.
+    # Dedup on title + YEAR, not title alone. Keying on the bare title threw away
+    # every remake and every same-named show from another country; including the
+    # year still collapses genuine duplicates (the same title indexed twice by
+    # TMDB) while keeping Dune '84 alongside Dune '21.
     best = {}
     for r in rows:
-        k = norm(r["title"])
-        if k and (k not in best or r["votes"] > best[k]["votes"]):
+        k = dedupe_key(r["title"], r.get("year"))
+        if k[0] and (k not in best or r["votes"] > best[k]["votes"]):
             best[k] = r
     rows = list(best.values())
     trailers = sum(1 for r in rows if r["trailer_key"])
@@ -252,7 +273,7 @@ def main():
         texts = [f"{c['title']}. {c['description']} {c['category']}" for c in chunk]
         dense = embed_docs(texts)
         sparse = sparse_docs(texts)
-        pts = [models.PointStruct(id=stable_id(c["title"]),
+        pts = [models.PointStruct(id=stable_id(c["tmdb_kind"], c["tmdb_id"]),
                                   vector={DENSE_VECTOR: dv, SPARSE_VECTOR: sv}, payload=c)
                for c, dv, sv in zip(chunk, dense, sparse)]
         client.upsert(COLLECTION_NAME, points=pts)

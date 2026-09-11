@@ -22,6 +22,7 @@ freeme_qdrant_db/
 qdrant_storage/
 
 # --- Optional: Data (If files are >100MB) ---
-# raw_data/
-# dataset.csv
-dataset_backup.csv
+
+# --- Local test scratch ---
+scratch_*
+.venv/

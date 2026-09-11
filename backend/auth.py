@@ -6,15 +6,28 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
-from backend.database import SessionLocal
+from backend.database import DATABASE_URL, SessionLocal
 from backend.models import User
 
 # ---------------- CONFIG ----------------
 
-# Read from env in production; the dev default only applies locally.
-SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-insecure-secret-change-me")
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    # A missing key in production would make every token forgeable, so refuse to
+    # boot there. Local SQLite dev gets a throwaway key instead of a hard stop.
+    if not DATABASE_URL.startswith("sqlite"):
+        raise RuntimeError(
+            "SECRET_KEY is not set. Generate one with:\n"
+            '  python -c "import secrets; print(secrets.token_hex(32))"'
+        )
+    SECRET_KEY = "dev-only-insecure-secret-change-me"
+
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+# 30 days. A 60-minute token meant that leaving the tab open over lunch and then
+# searching sent an expired JWT to /recommend/personalized, which 401'd and left
+# the UI showing an empty result grid with no explanation.
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24 * 30))
 
 pwd_context = CryptContext(
     schemes=["bcrypt"],

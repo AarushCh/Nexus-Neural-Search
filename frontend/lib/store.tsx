@@ -1,13 +1,15 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { api } from "./api";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { api, onWaking } from "./api";
 import { Media, SearchModel } from "./types";
 
 interface Store {
   token: string | null;
   user: string | null;
   online: boolean;
+  waking: boolean;
+  checkHealth: () => void;
   wishlistIds: Set<string>;
   model: SearchModel;
   setModel: (m: SearchModel) => void;
@@ -25,9 +27,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<string | null>(null);
   const [online, setOnline] = useState(false);
+  const [waking, setWaking] = useState(false);
   const [wishlistIds, setWishlistIds] = useState<Set<string>>(new Set());
   const [model, setModelState] = useState<SearchModel>("api");
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const checking = useRef(false);
 
   const toast = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -51,6 +55,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setWishlistIds(new Set());
   };
 
+  const checkHealth = useCallback(() => {
+    if (checking.current) return;
+    checking.current = true;
+    api
+      .health()
+      .then(setOnline)
+      .finally(() => {
+        checking.current = false;
+      });
+  }, []);
+
   useEffect(() => {
     const t = localStorage.getItem("nexus_token");
     const u = localStorage.getItem("nexus_user");
@@ -61,8 +76,30 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       setUser(u);
       refreshWishlist(t);
     }
-    api.health().then(setOnline);
-  }, [refreshWishlist]);
+    checkHealth();
+    onWaking(setWaking);
+    return () => onWaking(null);
+  }, [refreshWishlist, checkHealth]);
+
+  // The health probe used to run exactly once, at mount. If the API was asleep
+  // right then, the badge read OFFLINE until a manual reload — which is what you
+  // came back to after being AFK. Re-probe whenever the tab regains attention,
+  // and keep retrying on a slow loop while we believe we're offline.
+  useEffect(() => {
+    const onWake = () => {
+      if (document.visibilityState === "visible") checkHealth();
+    };
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("focus", onWake);
+    window.addEventListener("online", checkHealth);
+    const id = online ? undefined : setInterval(checkHealth, 20_000);
+    return () => {
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("focus", onWake);
+      window.removeEventListener("online", checkHealth);
+      if (id) clearInterval(id);
+    };
+  }, [checkHealth, online]);
 
   const login = useCallback(
     async (tok: string, u: string) => {
@@ -109,6 +146,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       token,
       user,
       online,
+      waking,
+      checkHealth,
       wishlistIds,
       model,
       setModel,
@@ -119,7 +158,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       toast,
       toastMsg,
     }),
-    [token, user, online, wishlistIds, model, setModel, login, logout, toggleWishlist, isSaved, toast, toastMsg]
+    [token, user, online, waking, checkHealth, wishlistIds, model, setModel, login, logout,
+     toggleWishlist, isSaved, toast, toastMsg]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

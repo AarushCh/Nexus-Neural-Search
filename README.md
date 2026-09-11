@@ -29,11 +29,13 @@ Every `internal` search:
 1. **Dense embedding** — the query is embedded with `BAAI/bge-small-en-v1.5` (384-dim), the *same* model used for the corpus.
 2. **Sparse embedding** — a BM25 sparse vector (FastEmbed, IDF modifier) captures exact keyword/title hits.
 3. **Fusion** — Qdrant's Query API fuses dense + sparse with **Reciprocal Rank Fusion (RRF)**.
-4. **Cross-encoder rerank** — `cross-encoder/ms-marco-MiniLM-L-6-v2` rescores the fused candidates.
+4. **Cross-encoder rerank** — `cross-encoder/ms-marco-MiniLM-L-6-v2` rescores the fused candidates. **Off by default** (`ENABLE_RERANK=false`): it needs `torch` + `sentence-transformers` (~600 MB) and OOMs on a 512 MB host. Turn it on wherever you have the RAM.
 5. **Exact-title pin** — a normalized exact title match is pinned to the top.
-6. **Calibrated match %** — the cross-encoder relevance logit is temperature-scaled through a sigmoid into an honest 0–99 match score (pins floored, everything else capped), so the number reflects real relevance instead of raw list rank.
+6. **Match %** — with the reranker on, the relevance logit is temperature-scaled through a sigmoid into a calibrated 0–99 score (pins floored, everything else capped). With it off, the badge falls back to rank position.
 
 Everything runs **locally** — no per-query external inference API. Qdrant itself is Qdrant Cloud.
+
+`GET /` reports which of these are actually live (`rerank`, `sparse`, `dense_model`, and the real collection **point count**), and returns **503** when the index is missing or empty rather than reporting a healthy service that silently answers every search with `[]`.
 
 ### 🧠 Grounded RAG ("API" mode)
 
@@ -76,10 +78,11 @@ nexus-neural-search/
 ├── frontend/            # Next.js app (App Router)
 │   ├── app/             # pages: / (search+feed), /title/[id] (detail), layout, globals.css
 │   ├── components/      # Feed, Card, DetailModal, AuthModal, Chrome, NeuralBg
-│   └── lib/             # api client, store (Context), types, image helpers
-├── build_catalogue.py   # Authoritative TMDB pipeline: harvest → validate → enrich → Qdrant
-├── ingest.py            # stable_id helper + legacy CSV ingester
-├── dataset.csv          # Legacy seed data
+│   └── lib/             # api client, store (Context), types, image helpers, dice prompts
+├── build_catalogue.py   # TMDB pipeline: harvest → validate → enrich → embed → Qdrant
+├── test_nexus.py        # Regression + smoke tests (plain asserts: python test_nexus.py)
+├── debug.py             # One-shot engine sanity check
+├── .github/workflows/   # CI (tests + frontend build) and the keep-alive ping
 ├── requirements.txt
 ├── .env.example         # Copy to backend/.env and fill in
 └── README.md
@@ -172,6 +175,20 @@ Local dev defaults to SQLite (`backend/freeme.db`). Set `DATABASE_URL` to a host
 ## ⚙️ Hosting notes
 
 Query-time embedding + reranking run in-process, so the host needs RAM for `torch` + bge-small + the cross-encoder (~600 MB resident). Set `ENABLE_RERANK=false` on tiny instances to run dense + BM25 only. Recommended split: **Vercel** (frontend) · **Render** (API) · **Qdrant Cloud** (vectors) · **Neon** (Postgres).
+
+### Cold starts
+
+Render's free tier spins the API down after 15 minutes idle, and the cold boot takes ~40 s. Three things absorb that:
+
+- `.github/workflows/keepalive.yml` pings `/` every 5 minutes so the instance stays resident. Actions can skip scheduled runs under load — pair it with a free pinger at [cron-job.org](https://cron-job.org) or [UptimeRobot](https://uptimerobot.com) if you want a hard guarantee.
+- The API client retries once with a 75 s budget, and the UI says **WAKING** instead of spinning forever.
+- The health probe re-runs on tab focus and `visibilitychange`, so the **OFFLINE** badge clears itself when you come back rather than sticking until a reload.
+
+### Required env in production
+
+`SECRET_KEY` is **mandatory** whenever `DATABASE_URL` points at anything other than local SQLite — the app refuses to boot without it rather than falling back to a shared default that would make every token forgeable.
+
+Access tokens last 30 days (`ACCESS_TOKEN_EXPIRE_MINUTES`). Set `CORS_ORIGINS` to your real frontend origin in production; while it stays `*`, credentialed CORS is disabled because `*` plus credentials is a combination browsers reject.
 
 ---
 
