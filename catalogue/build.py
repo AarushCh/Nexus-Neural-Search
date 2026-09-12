@@ -274,7 +274,12 @@ STORAGE_BUDGET_MB = float(os.getenv("STORAGE_BUDGET_MB", "440"))
 # trigram GINs come to roughly three quarters of the table again. It is an
 # estimate, and it only ever applies to --recreate: an in-place rebuild keeps
 # its indexes, so there the reading is exact and this is 1.0.
-INDEX_OVERHEAD = float(os.getenv("INDEX_OVERHEAD", "1.75"))
+#
+# Deliberately pessimistic. The two errors are not symmetric: stopping early
+# wastes disk and is fixed by re-running with a higher budget, while stopping
+# late means an over-quota database that refuses writes mid-build. The end of
+# every run prints the ratio it actually measured — use that number next time.
+INDEX_OVERHEAD = float(os.getenv("INDEX_OVERHEAD", "2.2"))
 
 
 def _selection_score(r: dict) -> float:
@@ -417,7 +422,10 @@ def stage_index() -> None:
     rep = store.storage_report()
     print(f"✅ Indexed {done} titles.")
     print(f"   storage: {rep['total_mb']} MB total "
-          f"({rep['bytes_per_title'] / 1024:.1f} KB/title)")
+          f"({rep['bytes_per_title'] / 1024:.1f} KB/title) — "
+          f"{rep['index_mb']} MB of that is indexes, {rep['extra_mb']} MB detail blobs")
+    print(f"   INDEX_OVERHEAD measured at {rep['index_overhead']} "
+          f"(this run assumed {scale})")
     if rep["reliable"]:
         print(f"   projected at 100k: {rep['projected_100k_mb']:.0f} MB")
 

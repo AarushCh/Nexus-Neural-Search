@@ -317,15 +317,22 @@ def storage_report() -> dict:
     with engine.connect() as cx:
         rows = cx.execute(text("""
             SELECT pg_total_relation_size('media')       AS media_bytes,
+                   pg_indexes_size('media')              AS index_bytes,
                    COALESCE(pg_total_relation_size('media_extra'), 0) AS extra_bytes,
                    (SELECT count(*) FROM media)          AS titles
         """)).mappings().first()
     n = max(int(rows["titles"]), 1)
     total = int(rows["media_bytes"]) + int(rows["extra_bytes"])
+    # Heap+TOAST vs indexes. A load running under --recreate has no indexes yet,
+    # so it can only estimate what they will add; printing the real ratio here
+    # is what lets the NEXT build stop at the right place instead of guessing.
+    body = total - int(rows["index_bytes"])
     return {
         "titles": int(rows["titles"]),
         "media_mb": round(int(rows["media_bytes"]) / 1e6, 1),
+        "index_mb": round(int(rows["index_bytes"]) / 1e6, 1),
         "extra_mb": round(int(rows["extra_bytes"]) / 1e6, 1),
+        "index_overhead": round(total / body, 2) if body else 0.0,
         "total_mb": round(total / 1e6, 1),
         "bytes_per_title": int(total / n),
         "projected_100k_mb": round(total / n * 100_000 / 1e6, 1),

@@ -165,7 +165,10 @@ jobs:
           from backend import store
           h, rep = store.health(), store.storage_report()
           print(f"- titles: **{h['titles']:,}**")
-          print(f"- storage: **{rep['total_mb']} MB** ({rep['bytes_per_title']/1024:.1f} KB/title)")
+          print(f"- storage: **{rep['total_mb']} MB** of a 512 MB branch "
+                f"({rep['bytes_per_title']/1024:.1f} KB/title)")
+          print(f"- of which: {rep['index_mb']} MB indexes, {rep['extra_mb']} MB detail blobs")
+          print(f"- measured INDEX_OVERHEAD: {rep['index_overhead']} (set this for the next build)")
           print(f"- healthy: {h['ok']}")
           PY
           } >> "$GITHUB_STEP_SUMMARY"
