@@ -398,7 +398,7 @@ def get_view_history(limit: int = 30, user=Depends(get_current_user_db), db: Ses
 def title_detail(media_id: str):
     """Full record straight from the catalogue.
 
-    The cast/crew/providers blob is written at build time into `media_extra`, so
+    The cast and providers blob is written at build time into `media_extra`, so
     this is one indexed read. The previous version kept a MediaDetail cache table
     and fell back to a live TMDB search on a miss — a per-open network call, on
     the render path, for data the build already had.

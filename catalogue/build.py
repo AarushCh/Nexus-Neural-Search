@@ -78,8 +78,11 @@ def stage_ids() -> None:
     """
     DATA.mkdir(parents=True, exist_ok=True)
     # Skew toward film: TMDB holds far more movies than series, and a catalogue
-    # of only long-tail TV reads badly.
-    plan = [("movie", int(TARGET * 1.6), 0.6), ("tv", int(TARGET * 0.7), 0.5)]
+    # of only long-tail TV reads badly. The multipliers are generous because the
+    # export is ranked on GLOBAL popularity, which is nothing like this
+    # catalogue's shape — a large slice of any top-N is regional TV drama that
+    # the foreign-reach gate in `normalise` then throws away.
+    plan = [("movie", int(TARGET * 2.2), 0.6), ("tv", int(TARGET * 1.0), 0.5)]
     rows = []
     for kind, want, min_pop in plan:
         got = []
@@ -248,14 +251,33 @@ def stage_normalise() -> None:
 # Ranking the whole pool on raw votes erases documentaries — they carry an order
 # of magnitude fewer votes than a blockbuster, not an order of magnitude less
 # worth — and a floor is the only thing that keeps the four categories browsable.
-QUOTAS = {"MOVIE": 0.45, "TV": 0.22, "ANIME": 0.12, "DOCUMENTARY": 0.07}
+#
+# Anime is the biggest floor after film because it is the category people come
+# here for and the one a global popularity ranking buries hardest. Documentaries
+# get the smallest: worth having, not worth spending a fifth of the disk on.
+QUOTAS = {"MOVIE": 0.46, "TV": 0.20, "ANIME": 0.22, "DOCUMENTARY": 0.04}
 
 # Anime enumerated directly from /discover, as a share of TARGET. The quota
 # above can only choose from what the ids stage actually collected.
-ANIME_SHARE = float(os.getenv("ANIME_SHARE", "0.18"))
+ANIME_SHARE = float(os.getenv("ANIME_SHARE", "0.30"))
 
 RECENT_YEARS = 4         # how long a title counts as "new"
 RECENCY_BOOST = 0.35     # peak multiplier for this year's releases
+
+# Neon's free branch is 512 MB and an over-quota database stops accepting
+# writes, so the build stops itself first. Rows are loaded best-scoring first,
+# which turns "how many titles fit" from a guess into a measurement: set the
+# target high and the catalogue fills the disk with the best of what qualified.
+# The remainder covers the user/wishlist/history tables and write-ahead log.
+STORAGE_BUDGET_MB = float(os.getenv("STORAGE_BUDGET_MB", "440"))
+
+# `pg_total_relation_size` counts indexes, and on a --recreate run they are not
+# built until after the load, so a reading taken mid-load sees only the heap.
+# This is the allowance for what they will add — HNSW, the tsvector GIN and the
+# trigram GINs come to roughly three quarters of the table again. It is an
+# estimate, and it only ever applies to --recreate: an in-place rebuild keeps
+# its indexes, so there the reading is exact and this is 1.0.
+INDEX_OVERHEAD = float(os.getenv("INDEX_OVERHEAD", "1.75"))
 
 
 def _selection_score(r: dict) -> float:
@@ -307,9 +329,11 @@ def _report(rows: list) -> None:
     if not rows:
         return
     cats, tagged, trailers, anime_tagged, providers = {}, 0, 0, 0, 0
-    tag_total = 0
+    tag_total, langs = 0, {}
     for r in rows:
         cats[r["category"]] = cats.get(r["category"], 0) + 1
+        langs[r.get("original_language") or "??"] = \
+            langs.get(r.get("original_language") or "??", 0) + 1
         n = len(r.get("tags") or [])
         tag_total += n
         if n >= 5:
@@ -322,6 +346,8 @@ def _report(rows: list) -> None:
             providers += 1
     n = len(rows)
     print("\n   categories: " + "  ".join(f"{k} {v}" for k, v in sorted(cats.items())))
+    top_langs = sorted(langs.items(), key=lambda t: -t[1])[:8]
+    print("   languages:  " + "  ".join(f"{k} {v * 100 // n}%" for k, v in top_langs))
     print(f"   tags:       {tag_total / n:.1f} avg, {tagged * 100 // n}% have 5+")
     print(f"   anilist:    {anime_tagged} matched")
     print(f"   trailers:   {trailers * 100 // n}%")
@@ -352,6 +378,8 @@ def stage_index() -> None:
     print(f"🧮 Vector type: {store.vector_type()}")
 
     print(f"🔢 Embedding + loading {len(rows)} titles…")
+    # Exact while the indexes are in place, an estimate while they are not.
+    scale = 1.0 if store.index_exists("media_embedding_idx") else INDEX_OVERHEAD
     B, done = 256, 0
     started = time.time()
     for start in range(0, len(rows), B):
@@ -365,6 +393,15 @@ def stage_index() -> None:
         if done % 2560 == 0 or done == len(rows):
             rate = done / max(time.time() - started, 1)
             print(f"   {done}/{len(rows)}  ({rate:.0f}/s)")
+        if STORAGE_BUDGET_MB and done % 5120 == 0:
+            used = store.storage_report()["total_mb"] * scale
+            if used >= STORAGE_BUDGET_MB:
+                print(f"   ⛔ storage budget reached: {used:.0f} MB of "
+                      f"{STORAGE_BUDGET_MB:.0f} MB after {done} titles. Stopping "
+                      "here — rows load best-scoring first, so what is in is the "
+                      "best of what qualified.")
+                rows = rows[:done]
+                break
 
     # Drop whatever the previous build left behind that this one rejected --
     # otherwise an in-place rebuild can never remove a title, and everything

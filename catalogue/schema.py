@@ -10,11 +10,12 @@ Three things here decide catalogue quality more than anything downstream:
 
 from __future__ import annotations
 
+import os
 import re
 import uuid
 
 from catalogue import tags as T
-from catalogue.tmdb import img_url, pick_backdrop, pick_poster
+from catalogue.tmdb import pick_backdrop, pick_poster
 
 # --- Identity -----------------------------------------------------------------
 
@@ -56,6 +57,19 @@ ADULT_TAGS = {"theme:hentai", "theme:softcore", "theme:animated-porn",
               "theme:pornography", "theme:porn", "theme:sexploitation",
               "theme:adult-video"}
 
+# Languages that never have to justify themselves. English is what this
+# audience searches in, and anime is a headline category in its own right, so
+# both stay on the ordinary vote floor.
+HOME_LANGUAGES = {"en"}
+
+# Everything else has to be genuinely KNOWN to earn a slot. A popularity-ranked
+# global pool is dominated by the long tail of regional TV drama — thousands of
+# series with a few hundred votes that nobody here is looking for — while the
+# foreign titles that actually travel (Parasite, Memories of Murder, Dark,
+# Amélie) clear this bar several times over. So the filter is on reach, not on
+# origin: a Korean film with an audience is in, a Korean soap without one is not.
+FOREIGN_MIN_VOTES = int(os.getenv("FOREIGN_MIN_VOTES", "3000"))
+
 
 def passes_quality(rec: dict, min_votes: int = MIN_VOTES) -> tuple[bool, str]:
     """(ok, reason). The reason is kept so the build can report WHY it dropped
@@ -70,8 +84,15 @@ def passes_quality(rec: dict, min_votes: int = MIN_VOTES) -> tuple[bool, str]:
         return False, "overview too short"
     if not rec.get("year"):
         return False, "no release date"
-    if int(rec.get("votes") or 0) < min_votes:
+    votes = int(rec.get("votes") or 0)
+    if votes < min_votes:
         return False, "too few votes"
+    lang = rec.get("original_language")
+    # Fail open on a missing language: dropping a title because a field is
+    # absent is a metadata bug wearing a quality filter's clothes.
+    if (votes < FOREIGN_MIN_VOTES and lang and lang not in HOME_LANGUAGES
+            and rec.get("category") != "ANIME"):
+        return False, "foreign-language, too little reach"
     if "film" in (rec.get("types") or []) and 0 < (rec.get("runtime") or 0) < MIN_RUNTIME:
         return False, "runtime too short"
     return True, ""
@@ -99,9 +120,12 @@ def build_record(kind: str, detail: dict, anilist: dict = None,
     poster = pick_poster(detail)
     backdrop = pick_backdrop(detail)
 
+    # Ten, not fifteen: the detail view scrolls a single row and nobody reaches
+    # the eleventh name, which was costing ~575 bytes a title to store.
+    # `profile` is the bare TMDB path — backend.store puts the prefix back.
     cast = [{"name": c.get("name"), "character": c.get("character"),
-             "profile": img_url(c.get("profile_path"), "w185")}
-            for c in ((detail.get("credits") or {}).get("cast") or [])[:15]]
+             "profile": c.get("profile_path")}
+            for c in ((detail.get("credits") or {}).get("cast") or [])[:10]]
     crew = _key_crew(kind, detail)
 
     providers, seen = [], set()
@@ -111,7 +135,7 @@ def build_record(kind: str, detail: dict, anilist: dict = None,
             n = p.get("provider_name")
             if n and n not in seen:
                 seen.add(n)
-                providers.append({"name": n, "logo": img_url(p.get("logo_path"), "w92")})
+                providers.append({"name": n, "logo": p.get("logo_path")})
 
     rating = round(float(detail.get("vote_average") or 0), 1)
     votes = int(detail.get("vote_count") or 0)
@@ -131,9 +155,10 @@ def build_record(kind: str, detail: dict, anilist: dict = None,
         # literal string "Genres: Action, Drama."
         "description": (detail.get("overview") or "").strip(),
         "tagline": (detail.get("tagline") or "").strip(),
-        "image": img_url(poster, "w500"),
-        "image_sm": img_url(poster, "w342"),
-        "backdrop": img_url(backdrop, "w1280"),
+        # Paths, not URLs. `backend.store` adds the size prefix on read — it is
+        # a 31-byte constant that was otherwise stored 100,000 times over.
+        "image": poster,
+        "backdrop": backdrop,
         "types": types, "forms": forms, "genres": sorted(genre_slugs),
         "tags": sorted(tag_map),
         "tag_weights": tag_map,

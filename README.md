@@ -197,6 +197,17 @@ noticeably off-shape is rejected rather than CSS-cropped), community rating, and
 textless artwork — plus a ≥40-character overview, a release date, and a vote floor.
 `normalise` prints exactly how many titles each gate dropped and why.
 
+**Composition is chosen, not inherited.** TMDB's export is ranked on *global*
+popularity, which is nothing like the shape of this catalogue: a large slice of any
+top-N is regional TV drama with a few hundred votes. So a foreign-language title has
+to clear `FOREIGN_MIN_VOTES` (3,000) to earn a slot, while English titles and anime
+stay on the ordinary floor. The filter is on **reach, not origin** — *Parasite*,
+*Memories of Murder* and *Dark* clear it several times over; a soap nobody outside
+its home market has rated does not. On top of that, each category has a guaranteed
+floor before the global fill (`QUOTAS`: 46% film, 22% anime, 20% TV, 4% documentary),
+because ranking one pool on votes erases whole categories. `normalise` prints the
+resulting language and category mix.
+
 **Tags** come from TMDB `/keywords` (a curated theme vocabulary the old build never
 requested), AniList's **rank-weighted** tags for anime (`Cyberpunk 95, Tragedy 85` —
 the weight decides what reaches the embedding), and derived facets for era, origin,
@@ -279,15 +290,22 @@ Consolidating onto Postgres removed that failure mode rather than working around
 
 ### Storage
 
-Measured with `bench_storage.py` on 5,000 realistic rows: **6.5 KB per title** with `halfvec` (float16) vectors, which pgvector ≥ 0.7 enables automatically.
+Neon's free branch is 0.5 GB. The first build measured **6.5 KB per title** — 332 MB for 50,000 — which put 100k on a paid plan. Four changes brought that down without dropping a single feature:
 
-| titles | storage |
+| change | measured on 20 real titles |
 |---|---|
-| 25,000 | ~166 MB |
-| 50,000 | ~332 MB |
-| 100,000 | ~663 MB |
+| detail blob holds only what the detail view renders (cast, providers), gzipped | 2,859 B → **768 B** |
+| posters stored as bare TMDB paths, both sizes derived on read | 190 B → **64 B** |
+| `original_title` stored only when it differs from the title | empties the column *and* most of its trigram index |
+| `types` / `forms` GIN indexes dropped — never in a `WHERE` clause | two indexes gone |
 
-Neon's free tier is ~0.5 GB, so **50k fits comfortably free** and 100k needs a paid plan. Run `python bench_storage.py` against a scratch database to re-measure before deciding — below a few thousand rows the fixed costs dominate and any estimate is meaningless.
+Crew, alternative titles and the IMDb/AniList ids were being stored for nobody: they are consumed at build time, into the embedded document, and never read back.
+
+The on-disk saving is smaller than the raw one, because Postgres was already compressing the old blob once its row crossed 2 KB — the new one is small enough to sit inline. Expect roughly **5.5 KB per title**, so about **90k titles free**.
+
+You do not have to guess, and you must not overshoot: an over-quota database stops accepting writes. `catalogue.build index` loads best-scoring titles first and stops on `STORAGE_BUDGET_MB` (default 440, leaving room for the user tables and the write-ahead log). Set `--target` high and the catalogue fills the disk with the best of what qualified.
+
+Run `python bench_storage.py` against a scratch database to re-measure — below a few thousand rows the fixed costs dominate and any estimate is meaningless.
 
 ### Cold starts
 

@@ -129,6 +129,52 @@ def test_inference_is_capped_to_survive_concurrent_searches():
     print(f"  ok  inference capped at {MODEL_CONCURRENCY} under 12 callers (peak {peak})")
 
 
+def test_stored_image_paths_round_trip():
+    """Posters are stored as bare TMDB paths to keep the catalogue inside a
+    free-tier database. The prefix has to come back on read, and rows written
+    before the change — which hold a whole URL — must survive untouched."""
+    from backend import store
+
+    assert store._img("/p.jpg", "w500") == f"{store.IMG_BASE}/w500/p.jpg"
+    assert store._img("https://cdn/x.jpg", "w500") == "https://cdn/x.jpg"
+    assert store._img(None, "w500") is None
+
+    card = store._card({"title": "Spirited Away", "original_title": None,
+                        "image": "/p.jpg", "backdrop": "/b.jpg",
+                        "category": "ANIME", "genres": [], "rating": 8.5})
+    assert card["image"].endswith("/w500/p.jpg"), card["image"]
+    assert card["backdrop"].endswith("/w1280/b.jpg"), card["backdrop"]
+    # Nothing renders a second poster size; it was a column and a JSON field
+    # per card, for no reader.
+    assert "image_sm" not in card, card
+    # Nulled in storage when it matches the title; the API still returns one.
+    assert card["original_title"] == "Spirited Away"
+    print("  ok  image paths expand on read, existing URLs pass through")
+
+
+def test_detail_blob_survives_the_round_trip():
+    """The blob is gzipped to fit; a corrupt one must degrade to 'no cast',
+    never to a 500 on the detail page."""
+    import gzip
+    import json
+
+    from backend import store
+
+    blob = gzip.compress(json.dumps(
+        {"cast": [{"name": "Rutger Hauer", "profile": "/r.jpg"}],
+         "providers": [{"name": "Netflix", "logo": "/n.jpg"}]}).encode())
+    out = store._unpack_extra(blob)
+    assert out["cast"][0]["profile"].endswith("/w185/r.jpg"), out
+    assert out["providers"][0]["logo"].endswith("/w92/n.jpg"), out
+    assert store._unpack_extra(b"not gzip") == {}
+
+    # The API deploys before the rebuild rewrites the table, so for a while
+    # every row is still the old uncompressed jsonb holding whole URLs.
+    legacy = store._unpack_extra({"cast": [{"name": "X", "profile": "https://i/x.jpg"}]})
+    assert legacy["cast"][0]["profile"] == "https://i/x.jpg", legacy
+    print("  ok  detail blob decompresses; legacy jsonb and junk both survive")
+
+
 def test_dedupe_key_keeps_remakes():
     """Catalogue dedupe keys on title+year so both Dunes survive."""
     assert dedupe_key("Dune", "1984") != dedupe_key("Dune", "2021")

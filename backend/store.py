@@ -22,13 +22,15 @@ What Postgres gives us that the Qdrant setup did not:
     array columns — awkward in Qdrant, native here.
 
 Layout: a lean `media` table carrying everything search touches, and a separate
-`media_extra` holding the heavy detail blob (cast, crew, providers, alt titles).
-Splitting them keeps the hot table small — the detail payload is roughly as big
-as everything else combined and is only read when someone opens a title.
+`media_extra` holding the detail blob (cast and providers), gzipped. Splitting
+them keeps the hot table small, and the blob is only read when someone opens a
+title. Everything here is sized against a 512 MB free-tier database, so posters
+are stored as bare TMDB paths and nothing is kept that no reader asks for.
 """
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 
@@ -37,6 +39,23 @@ from sqlalchemy import text
 from backend.database import engine
 
 VECTOR_SIZE = 384
+
+# Posters are stored as the bare TMDB path. The base and size prefix is the same
+# 31 bytes on every single row -- three times on a card and ten more in the
+# detail blob -- which is about 800 bytes per title spent on a constant.
+IMG_BASE = os.getenv("TMDB_IMG_BASE", "https://image.tmdb.org/t/p")
+
+
+def _img(path: str | None, size: str) -> str | None:
+    """Rebuild an image URL from a stored path.
+
+    Rows written before the change hold the whole URL, so anything that already
+    looks like one is passed through: a half-migrated catalogue still renders.
+    """
+    if not path:
+        return None
+    return path if path.startswith("http") else f"{IMG_BASE}/{size}{path}"
+
 
 # Postgres text-search configuration. 'english' gives stemming and stopword
 # removal, so "haunting" matches "haunted".
@@ -144,7 +163,6 @@ CREATE TABLE IF NOT EXISTS media (
     description       TEXT,
     tagline           TEXT,
     image             TEXT,
-    image_sm          TEXT,
     backdrop          TEXT,
     category          TEXT,
     types             TEXT[]  NOT NULL DEFAULT '{{}}',
@@ -166,10 +184,10 @@ CREATE TABLE IF NOT EXISTS media (
     tsv               tsvector
 );
 
--- The heavy half, read only when a detail page is opened.
+-- Gzipped cast + providers, read only when a detail page is opened.
 CREATE TABLE IF NOT EXISTS media_extra (
     id      TEXT PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
-    payload JSONB NOT NULL
+    payload BYTEA NOT NULL
 );
 """
 
@@ -185,8 +203,6 @@ def _index_sql() -> list:
     "CREATE INDEX IF NOT EXISTS media_tsv_idx      ON media USING gin (tsv)",
     "CREATE INDEX IF NOT EXISTS media_tags_idx     ON media USING gin (tags)",
     "CREATE INDEX IF NOT EXISTS media_genres_idx   ON media USING gin (genres)",
-    "CREATE INDEX IF NOT EXISTS media_forms_idx    ON media USING gin (forms)",
-    "CREATE INDEX IF NOT EXISTS media_types_idx    ON media USING gin (types)",
     # Trigram index on the title powers fuzzy title lookup — the old exact/prefix
     # match found neither typos nor partial titles.
     "CREATE INDEX IF NOT EXISTS media_title_trgm   ON media USING gin (title gin_trgm_ops)",
@@ -198,11 +214,41 @@ def _index_sql() -> list:
 ]
 
 
+# Applied once the tables exist, so an established catalogue sheds what a newer
+# build no longer stores instead of carrying it forever.
+_MIGRATIONS = [
+    # Both poster sizes are now derived from the one stored path.
+    "ALTER TABLE media DROP COLUMN IF EXISTS image_sm",
+    # `types` and `forms` ride along on every card but never appear in a WHERE
+    # clause, so their GIN indexes were pure write cost and disk.
+    "DROP INDEX IF EXISTS media_types_idx",
+    "DROP INDEX IF EXISTS media_forms_idx",
+]
+
+
+def _migrate_before(cx) -> None:
+    """Changes that must happen before CREATE TABLE IF NOT EXISTS sees the old
+    shape.
+
+    `media_extra` is a rebuildable cache, so moving its payload from jsonb to a
+    gzipped blob is a drop rather than a conversion — the build that runs this
+    writes the table again seconds later.
+    """
+    kind = cx.execute(text(
+        "SELECT data_type FROM information_schema.columns "
+        "WHERE table_name = 'media_extra' AND column_name = 'payload'")).scalar()
+    if kind and kind != "bytea":
+        cx.execute(text("DROP TABLE media_extra"))
+
+
 def create_schema() -> None:
     with engine.begin() as cx:
+        _migrate_before(cx)
         for stmt in _schema_sql().strip().split(";\n\n"):
             if stmt.strip():
                 cx.execute(text(stmt))
+        for stmt in _MIGRATIONS:
+            cx.execute(text(stmt))
 
 
 def create_indexes(concurrently: bool = True) -> None:
@@ -290,6 +336,14 @@ def storage_report() -> dict:
     }
 
 
+def index_exists(name: str) -> bool:
+    """Whether an index is present — a storage reading taken before the indexes
+    are built is measuring less than half the eventual footprint."""
+    with engine.connect() as cx:
+        return bool(cx.execute(text("SELECT to_regclass(:n) IS NOT NULL"),
+                               {"n": f"public.{name}"}).scalar())
+
+
 # --- Filters ------------------------------------------------------------------
 
 def build_filter(category=None, min_rating=None, year_min=None, year_max=None,
@@ -332,7 +386,7 @@ def _where(fragment: str, extra: str = "") -> str:
 
 CARD_COLUMNS = """
     id, tmdb_id, tmdb_kind, imdb_id, title, original_title, description, tagline,
-    image, image_sm, backdrop, category, types, forms, genres, tags,
+    image, backdrop, category, types, forms, genres, tags,
     rating, votes, year, runtime, seasons, episodes, status, certification,
     original_language, release_date, trailer_key
 """
@@ -340,6 +394,11 @@ CARD_COLUMNS = """
 
 def _card(row) -> dict:
     card = dict(row)
+    card["image"] = _img(card.get("image"), "w500")
+    card["backdrop"] = _img(card.get("backdrop"), "w1280")
+    # Stored only when it differs from the title; the API contract still says
+    # every card has one.
+    card["original_title"] = card.get("original_title") or card.get("title")
     card["rating_f"] = card.get("rating")
     card["year_i"] = card.get("year")
     card["type"] = (card.get("category") or "MOVIE").title()
@@ -499,7 +558,7 @@ def by_ids(ids: list) -> list[dict]:
 
 
 def detail(media_id: str) -> dict | None:
-    """Full record including the heavy blob (cast, crew, providers, alt titles)."""
+    """Full record including the gzipped detail blob (cast, providers)."""
     with engine.connect() as cx:
         row = cx.execute(text(
             f"SELECT {CARD_COLUMNS}, e.payload FROM media m "
@@ -508,10 +567,36 @@ def detail(media_id: str) -> dict | None:
     if not row:
         return None
     card = _card({k: v for k, v in row.items() if k != "payload"})
-    extra = row["payload"]
-    if extra:
-        card.update(extra if isinstance(extra, dict) else json.loads(extra))
+    if row["payload"]:
+        card.update(_unpack_extra(row["payload"]))
     return card
+
+
+def _unpack_extra(raw) -> dict:
+    """Decode the detail blob and put the image prefixes back.
+
+    Accepts the old uncompressed jsonb as well as the gzipped blob: the API
+    deploys before the rebuild that rewrites the table, and in between every
+    row is still in the old shape. Those rows carry whole URLs, which `_img`
+    passes through, so a detail page renders identically either way.
+    """
+    if isinstance(raw, dict):
+        data = raw
+    else:
+        try:
+            data = json.loads(gzip.decompress(bytes(raw)).decode("utf-8"))
+        except Exception:  # noqa: BLE001 - a bad blob must not take the page down
+            try:
+                data = json.loads(bytes(raw).decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                return {}
+    if not isinstance(data, dict):
+        return {}
+    for c in data.get("cast") or []:
+        c["profile"] = _img(c.get("profile"), "w185")
+    for p in data.get("providers") or []:
+        p["logo"] = _img(p.get("logo"), "w92")
+    return data
 
 
 def neighbours(positive_ids: list, negative_ids: list = None, limit: int = 12,
@@ -675,9 +760,13 @@ def upsert(rows: list[dict], documents: list[str], embeddings: list[list]) -> in
         payload.append({
             "id": rec["id"], "tmdb_id": rec["tmdb_id"], "tmdb_kind": rec["tmdb_kind"],
             "imdb_id": rec.get("imdb_id"), "title": rec["title"],
-            "original_title": rec.get("original_title"),
+            # Only when it differs. For an English title it is a byte-for-byte
+            # copy of `title`, in the column and in its trigram index.
+            "original_title": (rec.get("original_title")
+                               if (rec.get("original_title") or "") != rec["title"]
+                               else None),
             "description": rec.get("description"), "tagline": rec.get("tagline"),
-            "image": rec.get("image"), "image_sm": rec.get("image_sm"),
+            "image": rec.get("image"),
             "backdrop": rec.get("backdrop"), "category": rec.get("category"),
             "types": rec.get("types") or [], "forms": rec.get("forms") or [],
             "genres": rec.get("genres") or [], "tags": rec.get("tags") or [],
@@ -695,20 +784,20 @@ def upsert(rows: list[dict], documents: list[str], embeddings: list[list]) -> in
     sql = text(f"""
         INSERT INTO media (
             id, tmdb_id, tmdb_kind, imdb_id, title, original_title, description,
-            tagline, image, image_sm, backdrop, category, types, forms, genres,
+            tagline, image, backdrop, category, types, forms, genres,
             tags, rating, votes, year, runtime, seasons, episodes, status,
             certification, original_language, release_date, trailer_key,
             embedding, tsv)
         VALUES (
             :id, :tmdb_id, :tmdb_kind, :imdb_id, :title, :original_title, :description,
-            :tagline, :image, :image_sm, :backdrop, :category, :types, :forms, :genres,
+            :tagline, :image, :backdrop, :category, :types, :forms, :genres,
             :tags, :rating, :votes, :year, :runtime, :seasons, :episodes, :status,
             :certification, :original_language, :release_date, :trailer_key,
             CAST(:embedding AS {vt}), to_tsvector('{TS_CONFIG}', :doc))
         ON CONFLICT (id) DO UPDATE SET
             title = EXCLUDED.title, original_title = EXCLUDED.original_title,
             description = EXCLUDED.description, tagline = EXCLUDED.tagline,
-            image = EXCLUDED.image, image_sm = EXCLUDED.image_sm,
+            image = EXCLUDED.image,
             backdrop = EXCLUDED.backdrop, category = EXCLUDED.category,
             types = EXCLUDED.types, forms = EXCLUDED.forms, genres = EXCLUDED.genres,
             tags = EXCLUDED.tags, rating = EXCLUDED.rating, votes = EXCLUDED.votes,
@@ -725,17 +814,25 @@ def upsert(rows: list[dict], documents: list[str], embeddings: list[list]) -> in
 
 
 def upsert_extra(rows: list[dict]) -> int:
-    """The heavy detail blob, kept out of the hot search table."""
+    """The detail blob, gzipped, kept out of the hot search table.
+
+    Only what the detail view actually renders: cast and providers. Crew,
+    alternative titles and the IMDb/AniList ids were stored for nobody — they
+    are consumed at BUILD time, into the embedded document, and never read
+    back out. Gzipped because this is short, extremely repetitive JSON and
+    Postgres' own compression only reaches a value once its row crosses 2 KB;
+    below that the whole thing was being kept verbatim.
+    """
     payload = [{"id": r["id"],
-                "payload": json.dumps({k: r.get(k) for k in
-                                       ("cast", "crew", "providers", "alt_titles",
-                                        "imdb_rating", "imdb_votes", "anilist_id")},
-                                      ensure_ascii=False)}
+                "payload": gzip.compress(json.dumps(
+                    {"cast": r.get("cast") or [],
+                     "providers": r.get("providers") or []},
+                    ensure_ascii=False, separators=(",", ":")).encode("utf-8"), 6)}
                for r in rows]
     with engine.begin() as cx:
         cx.execute(text("""
             INSERT INTO media_extra (id, payload)
-            VALUES (:id, CAST(:payload AS jsonb))
+            VALUES (:id, :payload)
             ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload
         """), payload)
     return len(payload)

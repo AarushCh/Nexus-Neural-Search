@@ -3,9 +3,11 @@ name: Build catalogue
 # Builds the whole catalogue on GitHub's runners and loads it straight into Neon.
 # Nothing runs on your machine, and nothing needs your machine to be on.
 #
-# A runner gives 4 vCPU / 16 GB RAM / ~14 GB disk and a 6-hour job limit, which
-# comfortably covers a 100k-title build: roughly 45 min of TMDB fetching at 40
-# req/s, a few minutes to normalise, and ~30 min to embed.
+# A runner gives 4 vCPU / 16 GB RAM / ~14 GB disk and a 6-hour job limit. A cold
+# 100k build does not fit that in one go — the id pool is deliberately several
+# times the target, because a global popularity ranking is nothing like this
+# catalogue's shape — but `data/` is cached and every stage resumes, so a run
+# that times out loses nothing. Dispatch it again and it carries on.
 #
 # Setup (once):
 #   Settings > Secrets and variables > Actions > New repository secret
@@ -25,6 +27,10 @@ on:
         description: "Minimum vote count (quality floor)"
         required: true
         default: "8"
+      storage_budget_mb:
+        description: "Stop loading at this many MB (Neon free branch is 512)"
+        required: true
+        default: "440"
       recreate:
         description: "Drop and rebuild the tables from scratch"
         type: boolean
@@ -69,6 +75,9 @@ jobs:
       TARGET: ${{ github.event.inputs.target || '100000' }}
       MIN_VOTES: ${{ github.event.inputs.min_votes || '8' }}
       STAGES: ${{ github.event.inputs.stages || 'normalise-index' }}
+      # The load stops itself here rather than filling the branch: an over-quota
+      # Neon database refuses writes, and that failure lands mid-build.
+      STORAGE_BUDGET_MB: ${{ github.event.inputs.storage_budget_mb || '440' }}
 
     steps:
       - uses: actions/checkout@v4

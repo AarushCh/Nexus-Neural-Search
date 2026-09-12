@@ -263,8 +263,28 @@ def test_selection_keeps_every_category():
     assert len(picked) == 100, len(picked)
     for c in ("MOVIE", "TV", "ANIME", "DOCUMENTARY"):
         assert cats.get(c, 0) > 0, f"{c} was wiped out: {cats}"
-    assert cats["DOCUMENTARY"] >= 7, cats
+    assert cats["DOCUMENTARY"] >= 4, cats
+    assert cats["ANIME"] >= 20, cats
     print(f"  ok  selection keeps every category: {cats}")
+
+
+def test_foreign_language_needs_reach():
+    """'Cut the K-dramas, keep Memories of Murder.' The filter is on reach, not
+    on origin: a foreign title with an audience is in, one without is not, and
+    anime is exempt because it is a category here rather than a foreign import."""
+    base = {"title": "X", "image": "u", "description": "d" * 60, "year": "2020",
+            "types": ["film"], "runtime": 100}
+
+    obscure_kdrama = dict(base, original_language="ko", votes=800, category="TV")
+    ok, why = passes_quality(obscure_kdrama)
+    assert not ok and why == "foreign-language, too little reach", (ok, why)
+
+    for keep in (dict(base, original_language="ko", votes=180_000),   # Memories of Murder
+                 dict(base, original_language="en", votes=800),       # small English film
+                 dict(base, original_language="ja", votes=400, category="ANIME")):
+        assert passes_quality(keep)[0], keep
+
+    print("  ok  foreign titles need reach; English and anime do not")
 
 
 def test_recent_good_titles_beat_older_equals():

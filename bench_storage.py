@@ -57,9 +57,9 @@ def make_row(i: int) -> dict:
         # TMDB overviews average roughly 350-500 characters.
         "description": _text(70),
         "tagline": _text(7),
-        "image": f"https://image.tmdb.org/t/p/w500/{i:08d}abcdefgh.jpg",
-        "image_sm": f"https://image.tmdb.org/t/p/w342/{i:08d}abcdefgh.jpg",
-        "backdrop": f"https://image.tmdb.org/t/p/w1280/{i:08d}ijklmnop.jpg",
+        # Bare TMDB paths, as the catalogue stores them.
+        "image": f"/{i:08d}abcdefgh.jpg",
+        "backdrop": f"/{i:08d}ijklmnop.jpg",
         "category": rnd.choice(["MOVIE", "TV", "ANIME", "DOCUMENTARY"]),
         "types": ["film"], "forms": ["live-action"],
         "genres": rnd.sample(["action", "drama", "sci-fi", "horror", "comedy"], 3),
@@ -70,13 +70,13 @@ def make_row(i: int) -> dict:
         "seasons": None, "episodes": None, "status": "Released",
         "certification": "R", "original_language": "en",
         "release_date": "2017-10-04", "trailer_key": "gCcx85zbxz4",
-        # media_extra: 15 cast, 8 crew, 10 providers.
+        # media_extra: 10 cast and 10 providers, the only two the detail view
+        # renders. Crew and alternative titles are consumed at build time, into
+        # the embedded document, and never stored.
         "cast": [{"name": rnd.choice(NAMES), "character": _text(2),
-                  "profile": f"https://image.tmdb.org/t/p/w185/{j:08d}.jpg"}
-                 for j in range(15)],
+                  "profile": f"/{j:08d}.jpg"} for j in range(10)],
         "crew": [{"name": rnd.choice(NAMES), "job": "Director"} for _ in range(8)],
-        "providers": [{"name": f"Provider {j}",
-                       "logo": f"https://image.tmdb.org/t/p/w92/{j:04d}.jpg"}
+        "providers": [{"name": f"Provider {j}", "logo": f"/{j:04d}.jpg"}
                       for j in range(10)],
         "alt_titles": [f"Alt Title {j} for {i}" for j in range(5)],
         "imdb_rating": 7.5, "imdb_votes": 50_000, "anilist_id": None,

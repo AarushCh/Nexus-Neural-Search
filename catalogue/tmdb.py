@@ -29,8 +29,6 @@ import requests
 
 BASE = "https://api.themoviedb.org/3"
 EXPORTS = "https://files.tmdb.org/p/exports"
-IMG = "https://image.tmdb.org/t/p"
-
 API_KEY = os.getenv("TMDB_API_KEY")
 
 # TMDB tolerates roughly 50 requests/second. Stay under it: a 429 storm costs
@@ -230,7 +228,3 @@ def pick_poster(detail: dict) -> str | None:
 def pick_backdrop(detail: dict) -> str | None:
     block = (detail.get("images") or {}).get("backdrops") or []
     return best_image(block, 16 / 9, BACKDROP_MIN_WIDTH) or detail.get("backdrop_path")
-
-
-def img_url(path: str | None, size: str) -> str | None:
-    return f"{IMG}/{size}{path}" if path else None
