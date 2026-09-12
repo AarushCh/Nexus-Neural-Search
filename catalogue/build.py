@@ -96,14 +96,15 @@ def stage_ids() -> None:
 
     # Anime is ~7% of a popularity-ranked catalogue but a headline category
     # here, and global popularity buries everything past its few breakouts. Ask
-    # TMDB for the slice directly, so the pool actually contains enough of it
-    # for the quota in `normalise` to have something to choose from.
+    # TMDB for the slice directly.
+    #
+    # ALL of it, with no share of the target: genre 16 + Japanese is 5,427
+    # series and 6,007 films on TMDB today, so the entire universe of anime it
+    # holds is ~11.4k candidates. There is nothing to ration. Capping this at a
+    # fraction of the target only ever threw away anime that would have passed.
     seen = {(r["kind"], r["id"]) for r in rows}
-    want_anime = int(TARGET * ANIME_SHARE)
     added = 0
     for kind in ("tv", "movie"):
-        if added >= want_anime:
-            break
         print(f"-> Enumerating Japanese animation ({kind})...")
         for row in tmdb.iter_discover_ids(
                 kind, {"with_genres": 16, "with_original_language": "ja"}):
@@ -114,8 +115,6 @@ def stage_ids() -> None:
             rows.append({"kind": kind, "id": row["id"],
                          "pop": float(row.get("popularity") or 0)})
             added += 1
-            if added >= want_anime:
-                break
     print(f"   +{added} anime candidates beyond the popularity slice")
 
     with IDS_FILE.open("w", encoding="utf-8") as f:
@@ -252,14 +251,12 @@ def stage_normalise() -> None:
 # of magnitude fewer votes than a blockbuster, not an order of magnitude less
 # worth — and a floor is the only thing that keeps the four categories browsable.
 #
-# Anime is the biggest floor after film because it is the category people come
-# here for and the one a global popularity ranking buries hardest. Documentaries
-# get the smallest: worth having, not worth spending a fifth of the disk on.
+# Anime's floor is set above what TMDB can actually supply — it holds ~11.4k
+# Japanese animated titles in total, so at a 100k target this reads as "take
+# every anime that passes the gates", which is the intent. A bucket short of
+# its quota simply leaves the slots to the global fill. Documentaries get the
+# smallest: worth having, not worth spending a fifth of the disk on.
 QUOTAS = {"MOVIE": 0.46, "TV": 0.20, "ANIME": 0.22, "DOCUMENTARY": 0.04}
-
-# Anime enumerated directly from /discover, as a share of TARGET. The quota
-# above can only choose from what the ids stage actually collected.
-ANIME_SHARE = float(os.getenv("ANIME_SHARE", "0.30"))
 
 RECENT_YEARS = 4         # how long a title counts as "new"
 RECENCY_BOOST = 0.35     # peak multiplier for this year's releases

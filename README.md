@@ -205,8 +205,13 @@ stay on the ordinary floor. The filter is on **reach, not origin** — *Parasite
 *Memories of Murder* and *Dark* clear it several times over; a soap nobody outside
 its home market has rated does not. On top of that, each category has a guaranteed
 floor before the global fill (`QUOTAS`: 46% film, 22% anime, 20% TV, 4% documentary),
-because ranking one pool on votes erases whole categories. `normalise` prints the
-resulting language and category mix.
+because ranking one pool on votes erases whole categories.
+
+Anime gets enumerated from `/discover` in full rather than rationed: TMDB holds 5,427
+Japanese animated series and 6,007 films, so the entire universe of it is ~11.4k
+candidates and there is nothing to ration — the anime floor is deliberately set above
+that supply, which makes it read as "take every one that passes". `normalise` prints
+the resulting language and category mix.
 
 **Tags** come from TMDB `/keywords` (a curated theme vocabulary the old build never
 requested), AniList's **rank-weighted** tags for anime (`Cyberpunk 95, Tragedy 85` —
