@@ -39,7 +39,11 @@ on:
         description: "Which stages to run"
         type: choice
         default: all
-        options: [all, ids, fetch, normalise, index]
+        # ids-fetch touches TMDB only and never writes to the database, so it
+        # can time out and be re-dispatched with the site still serving. Splitting
+        # a cold build that way gives the index stage a fresh 6-hour budget and
+        # confines the only risky part to one run.
+        options: [all, ids-fetch, normalise-index, ids, fetch, normalise, index]
   schedule:
     # Weekly refresh. Re-runs normalise + index against the cached raw data, so
     # ratings and providers stay current without re-harvesting TMDB.
