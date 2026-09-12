@@ -13,6 +13,9 @@
     --nexus-glitch-1: #00f3ff;
     --nexus-glitch-2: #ff0055;
     --spark-blend: screen;
+    /* Width of the permanent icon rail, collapsed and expanded. */
+    --rail-w: 68px;
+    --rail-open-w: 268px;
 }
 
 html.light-mode body {
@@ -47,6 +50,11 @@ body {
     display: flex;
     flex-direction: column;
     align-items: center;
+    /* Clear the permanent icon rail here rather than on .main-container: this
+       way the content still CENTRES in the space that is left, instead of being
+       pushed right and sitting off-balance on a wide screen. Fixed-position
+       chrome (rail, theme toggle, model selector) is unaffected by it. */
+    padding-left: var(--rail-w);
     transition: background 0.4s ease;
 }
 
@@ -335,32 +343,50 @@ html.light-mode .model-card {
     border-color: #ddd;
 }
 
-/* --- SIDEBAR --- */
+/* --- SIDEBAR: a permanent icon rail that expands to show labels --- */
 .sidebar {
     position: fixed;
     top: 0;
-    left: -360px;
-    width: 350px;
+    left: 0;
+    width: var(--rail-w);
     height: 100%;
+    display: flex;
+    flex-direction: column;
     background: var(--bg-sidebar);
     border-right: 1px solid var(--border-color);
-    padding: 100px 40px;
-    transition: 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+    padding: 92px 0 24px;
+    overflow: hidden;
+    transition: width 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
     z-index: 1000;
     backdrop-filter: blur(20px);
-    box-shadow: 10px 0 50px rgba(0, 0, 0, 0.5);
 }
 
 .sidebar.open {
-    left: 0;
+    width: var(--rail-open-w);
+    box-shadow: 10px 0 50px rgba(0, 0, 0, 0.45);
+}
+
+/* Labels only exist when expanded. Collapsed they are zero-width rather than
+   display:none, so the text fades instead of snapping in. */
+.nav-label {
+    opacity: 0;
+    max-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    transition: opacity .18s ease, max-width .28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.sidebar.open .nav-label {
+    opacity: 1;
+    max-width: 180px;
 }
 
 .menu-btn {
     position: fixed;
-    top: 25px;
-    left: 25px;
-    width: 50px;
-    height: 50px;
+    top: 20px;
+    left: 12px;
+    width: 44px;
+    height: 44px;
     background: var(--bg-card);
     border: 1px solid var(--border-color);
     border-radius: 12px;
@@ -370,8 +396,8 @@ html.light-mode .model-card {
     flex-direction: column;
     justify-content: center;
     align-items: center;
-    gap: 6px;
-    transition: 0.3s;
+    gap: 5px;
+    transition: 0.25s;
 }
 
 .menu-btn:hover {
@@ -380,14 +406,14 @@ html.light-mode .model-card {
 }
 
 .bar {
-    width: 24px;
+    width: 20px;
     height: 2px;
     background: var(--neon-blue);
     transition: 0.3s;
 }
 
 body.menu-open .bar:nth-child(1) {
-    transform: rotate(45deg) translate(5px, 6px);
+    transform: rotate(45deg) translate(4px, 5px);
 }
 
 body.menu-open .bar:nth-child(2) {
@@ -395,52 +421,88 @@ body.menu-open .bar:nth-child(2) {
 }
 
 body.menu-open .bar:nth-child(3) {
-    transform: rotate(-45deg) translate(5px, -6px);
+    transform: rotate(-45deg) translate(4px, -5px);
 }
 
 .hud-header {
     font-family: 'Rajdhani';
-    color: var(--neon-blue);
-    font-size: 28px;
-    font-weight: 800;
-    border-bottom: 2px solid var(--border-color);
-    padding-bottom: 20px;
-    margin-bottom: 30px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 700;
     letter-spacing: 2px;
+    text-transform: uppercase;
+    padding: 0 22px 14px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border-color);
+    height: 30px;
+    opacity: 0;
+    transition: opacity .18s ease;
+    white-space: nowrap;
+}
+
+.sidebar.open .hud-header {
+    opacity: 1;
+}
+
+.nav-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
 }
 
 .nav-item {
-    padding: 18px 15px;
-    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: 100%;
+    padding: 12px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
     font-family: 'Rajdhani';
-    font-size: 20px;
+    font-size: 17px;
     font-weight: 600;
+    letter-spacing: .5px;
+    text-align: left;
     cursor: pointer;
     color: var(--text-secondary);
-    transition: 0.2s;
-    margin-bottom: 10px;
+    transition: background .2s, color .2s;
+}
+
+.nav-icon {
+    flex: 0 0 24px;
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+}
+
+.nav-icon svg {
+    width: 22px;
+    height: 22px;
 }
 
 .nav-item:hover {
     color: var(--text-primary);
-    padding-left: 25px;
-    background: linear-gradient(90deg, var(--bg-input), transparent);
-    border-left: 4px solid var(--neon-blue);
+    background: var(--bg-input);
 }
 
 .nav-item.active {
     color: var(--neon-blue);
-    border-left: 4px solid var(--neon-blue);
-    padding-left: 25px;
+    background: rgba(0, 243, 255, .1);
 }
 
 .status-box {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 40px;
+    gap: 14px;
+    /* Matches .nav-item's 10px menu padding + 12px item padding, so the dot
+       shares a column with the icons below it. */
+    padding: 6px 22px 14px;
     font-family: 'Rajdhani';
-    font-size: 15px;
+    font-size: 13px;
+    letter-spacing: 1px;
     color: var(--text-secondary);
 }
 
@@ -449,17 +511,18 @@ body.menu-open .bar:nth-child(3) {
     height: 10px;
     border-radius: 50%;
     background: #ff0055;
-    box-shadow: 0 0 10px #ff0055;
+    box-shadow: 0 0 10px currentColor;
     transition: 0.3s;
 }
 
 .hud-footer {
-    position: absolute;
-    bottom: 40px;
+    margin-top: auto;
+    padding: 14px 22px 0;
     font-family: 'Rajdhani';
-    font-size: 14px;
+    font-size: 13px;
     color: var(--text-secondary);
     letter-spacing: 1px;
+    border-top: 1px solid var(--border-color);
 }
 
 /* --- LAYOUT --- */
@@ -474,10 +537,14 @@ body.menu-open .bar:nth-child(3) {
     transition: 0.3s;
 }
 
-body.menu-open .main-container {
-    filter: blur(5px) brightness(0.5);
-    pointer-events: auto;
-    cursor: pointer;
+/* No blur when the rail expands: it is a 268px panel beside the content, not a
+   full-screen overlay, and dimming the entire page to read five labels was
+   disorienting. On mobile it DOES cover the page, so it dims there. */
+@media (max-width: 768px) {
+    body.menu-open .main-container {
+        filter: blur(4px) brightness(0.5);
+        cursor: pointer;
+    }
 }
 
 /* --- SEARCH --- */
@@ -643,7 +710,7 @@ input#search-input:focus {
 
 @media (max-width: 600px) {
     .results-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, 1fr);
     }
 }
 
@@ -731,10 +798,11 @@ input#search-input:focus {
 
 @media (max-width: 500px) {
     .results-grid {
-        grid-template-columns: 1fr;
-        /* 1 column on mobile */
-        padding: 15px;
-        gap: 20px;
+        /* Two, not one. A single full-width poster per row meant about one and a
+           half results on screen and endless scrolling. */
+        grid-template-columns: repeat(2, 1fr);
+        padding: 12px;
+        gap: 12px;
     }
 }
 
@@ -1206,12 +1274,6 @@ html.light-mode ::-webkit-scrollbar-thumb:hover {
         letter-spacing: 4px;
     }
 
-    .sidebar {
-        width: 100%;
-        /* Full width sidebar on mobile */
-        left: -100%;
-    }
-
     .search-container {
         padding: 0 20px;
     }
@@ -1367,3 +1429,176 @@ html.light-mode .filter-select option { background: #fff; color: #111; }
 .detail-body.with-trailer { margin-top: 0; padding-top: 24px; }
 .detail-body.with-trailer .detail-head { align-items: flex-start; }
 .detail-body.with-trailer .detail-poster { margin-top: 0; }
+
+/* ============================================================
+   PHONE LAYOUT
+   The grid used to drop to a single full-width poster, so a phone showed about
+   one and a half results and everything else — filter bar, floating controls,
+   carousels — was still sized for a desktop. Two tiles per row, and every
+   control scaled to match.
+   ============================================================ */
+@media (max-width: 768px) {
+    :root {
+        --rail-w: 56px;
+        --rail-open-w: 248px;
+    }
+
+    .menu-btn {
+        top: 12px;
+        left: 8px;
+        width: 40px;
+        height: 40px;
+    }
+
+    .sidebar {
+        padding-top: 66px;
+    }
+
+    .main-container {
+        padding: 12px 12px 90px;
+    }
+
+    .hero {
+        margin-bottom: 18px;
+    }
+
+    /* The filter row wrapped into three ragged lines. One scrollable line
+       instead, with the scrollbar hidden so it reads as a strip. */
+    #filter-bar {
+        flex-wrap: nowrap;
+        justify-content: flex-start;
+        overflow-x: auto;
+        scrollbar-width: none;
+        gap: 8px;
+        padding: 0 2px 4px;
+        margin-bottom: 18px;
+    }
+
+    #filter-bar::-webkit-scrollbar {
+        display: none;
+    }
+
+    #filter-bar > * {
+        flex: 0 0 auto;
+    }
+
+    .filter-btn,
+    .filter-select {
+        padding: 7px 13px;
+        font-size: 12.5px;
+    }
+
+    /* Card text has half the width now, so it has to stop shouting. */
+    .card-content {
+        padding: 12px;
+    }
+
+    .card h3 {
+        font-size: 15px;
+        margin: 8px 0 6px;
+    }
+
+    .card p {
+        font-size: 12.5px;
+        line-height: 1.45;
+        -webkit-line-clamp: 3;
+    }
+
+    .badge-row {
+        gap: 6px;
+    }
+
+    .type-badge,
+    .rating-badge {
+        font-size: 10px;
+        padding: 3px 7px;
+    }
+
+    .similar-btn {
+        font-size: 11px;
+        padding: 8px;
+        letter-spacing: .5px;
+    }
+
+    .match-label-base {
+        font-size: 10px;
+        padding: 3px 6px;
+    }
+
+    /* Carousels: six columns on a phone is six thumbnails nobody can see. */
+    .feed {
+        padding: 0 12px;
+    }
+
+    .feed-row {
+        margin-bottom: 26px;
+    }
+
+    .feed-row-title {
+        font-size: 18px;
+        margin-bottom: 10px;
+    }
+
+    .feed-page {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+    }
+
+    .feed-track {
+        grid-auto-columns: 120px;
+        gap: 12px;
+    }
+
+    .feed-card-title {
+        font-size: 12px;
+    }
+
+    /* Floating controls were overlapping the results. */
+    .model-selector {
+        bottom: 14px;
+        right: 14px;
+    }
+
+    .selected-model {
+        padding: 8px 12px;
+        font-size: 12px;
+    }
+
+    .theme-wrapper {
+        top: 14px;
+        right: 14px;
+    }
+
+    .detail-body {
+        padding: 20px 16px 28px;
+        margin-top: -40px;
+    }
+
+    .detail-head {
+        gap: 14px;
+    }
+
+    .detail-poster {
+        width: 92px;
+    }
+
+    .detail-title {
+        font-size: 24px;
+    }
+}
+
+@media (max-width: 380px) {
+    /* Very narrow phones: keep two columns but give the text room. */
+    .results-grid {
+        gap: 10px;
+        padding: 10px;
+    }
+
+    .card h3 {
+        font-size: 14px;
+    }
+
+    .card p {
+        -webkit-line-clamp: 2;
+    }
+}

@@ -222,13 +222,18 @@ export default function Home() {
   return (
     <>
       <MenuButton onClick={() => setSidebar((s) => !s)} open={sidebar} />
-      <Sidebar open={sidebar} onClose={() => setSidebar(false)} onNav={onNav} onLogin={() => { setAuthOpen(true); setSidebar(false); }} />
+      <Sidebar open={sidebar} onClose={() => setSidebar(false)} onNav={onNav} view={view} onLogin={() => { setAuthOpen(true); setSidebar(false); }} />
       <ModelSelector />
       <ThemeToggle />
       <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} />
       <DetailModal media={detail} onClose={() => setDetail(null)} onSimilar={openSimilar} />
 
-      <div className={`main-container ${sidebar ? "menu-open" : ""}`} style={sidebar ? { filter: "blur(5px) brightness(.5)" } : undefined}>
+      <div
+        className={`main-container ${sidebar ? "menu-open" : ""}`}
+        // Tapping the dimmed page closes the expanded rail. Only while it is
+        // open, so this never swallows a normal click.
+        onClick={sidebar ? () => setSidebar(false) : undefined}
+      >
         <div className="hero">
           <h1 className="cyber-glitch" data-text="NEXUS">NEXUS</h1>
           <div className="subtitle">

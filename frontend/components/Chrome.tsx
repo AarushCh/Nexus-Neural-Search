@@ -19,41 +19,109 @@ export function MenuButton({ onClick, open }: { onClick: () => void; open: boole
   );
 }
 
+/* Inline SVGs rather than an icon package: five glyphs is not worth a dependency,
+   and `currentColor` lets them inherit the active/hover states for free. */
+const Icon = {
+  home: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 10.5 12 3l9 7.5" /><path d="M5 9.5V21h14V9.5" /><path d="M9.5 21v-6h5v6" />
+    </svg>
+  ),
+  heart: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20.8 5.6a5 5 0 0 0-7.1 0L12 7.3l-1.7-1.7a5 5 0 1 0-7.1 7.1l8.8 8.8 8.8-8.8a5 5 0 0 0 0-7.1z" />
+    </svg>
+  ),
+  history: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /><path d="M12 7.5V12l3.5 2" />
+    </svg>
+  ),
+  info: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><path d="M12 7.6h.01" />
+    </svg>
+  ),
+  login: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" /><path d="M10 17l5-5-5-5" /><path d="M15 12H3" />
+    </svg>
+  ),
+  logout: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4" /><path d="M16 17l5-5-5-5" /><path d="M21 12H9" />
+    </svg>
+  ),
+};
+
+function NavItem({
+  icon, label, active, onClick,
+}: { icon: React.ReactNode; label: string; active?: boolean; onClick: () => void }) {
+  return (
+    <button
+      className={`nav-item ${active ? "active" : ""}`}
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+    >
+      <span className="nav-icon">{icon}</span>
+      <span className="nav-label">{label}</span>
+    </button>
+  );
+}
+
 export function Sidebar({
   open,
   onClose,
   onNav,
   onLogin,
+  view = "search",
 }: {
   open: boolean;
   onClose: () => void;
   onNav: (view: "search" | "wishlist" | "history" | "about") => void;
   onLogin: () => void;
+  view?: string;
 }) {
   const { user, token, online, waking, logout } = useStore();
+  const go = (v: "search" | "wishlist" | "history" | "about") => () => {
+    onNav(v);
+    onClose();
+  };
   return (
-    <div id="sidebar" className={`sidebar ${open ? "open" : ""}`}>
-      <div className="hud-header">SYSTEM HUD</div>
-      <div className="status-box">
-        <div
-          className="status-indicator"
-          style={{ background: waking ? "#ffb800" : online ? "#00ff9d" : "#ff0055" }}
-        />
-        <span>{waking ? "WAKING" : online ? "ONLINE" : "OFFLINE"}</span>
+    <nav id="sidebar" className={`sidebar ${open ? "open" : ""}`} aria-label="Main">
+      <div className="hud-header">
+        <span className="hud-title">System HUD</span>
       </div>
+
+      <div className="status-box" title={waking ? "Waking" : online ? "Online" : "Offline"}>
+        {/* Same 24px slot the nav icons use, so the dot lines up with them
+            in the collapsed rail instead of sitting a few pixels to the left. */}
+        <span className="nav-icon">
+          <span
+            className="status-indicator"
+            style={{ background: waking ? "#ffb800" : online ? "#00ff9d" : "#ff0055" }}
+          />
+        </span>
+        <span className="nav-label">{waking ? "WAKING" : online ? "ONLINE" : "OFFLINE"}</span>
+      </div>
+
       <div className="nav-menu">
-        <div className="nav-item active" onClick={() => onNav("search")}>NEURAL SEARCH</div>
-        <div className="nav-item" onClick={() => onNav("wishlist")}>♥ WISHLIST</div>
-        <div className="nav-item" onClick={() => onNav("history")}>↺ HISTORY</div>
-        <div className="nav-item" onClick={() => onNav("about")}>ⓘ ABOUT</div>
+        <NavItem icon={Icon.home} label="Home" active={view === "search" || view === "home"} onClick={go("search")} />
+        <NavItem icon={Icon.heart} label="Wishlist" active={view === "wishlist"} onClick={go("wishlist")} />
+        <NavItem icon={Icon.history} label="History" active={view === "history"} onClick={go("history")} />
+        <NavItem icon={Icon.info} label="About" onClick={go("about")} />
         {token ? (
-          <div className="nav-item" onClick={() => { logout(); onClose(); }}>LOGOUT</div>
+          <NavItem icon={Icon.logout} label="Logout" onClick={() => { logout(); onClose(); }} />
         ) : (
-          <div className="nav-item" onClick={onLogin}>LOGIN</div>
+          <NavItem icon={Icon.login} label="Login" onClick={onLogin} />
         )}
       </div>
-      <div className="hud-footer">USER: <span>{user || "GUEST"}</span></div>
-    </div>
+
+      <div className="hud-footer">
+        <span className="nav-label">USER: <span>{user || "GUEST"}</span></span>
+      </div>
+    </nav>
   );
 }
 
