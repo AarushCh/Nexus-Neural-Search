@@ -1419,7 +1419,9 @@ html.light-mode ::-webkit-scrollbar-thumb:hover {
 .feed-nav:disabled { opacity: .25; cursor: default; }
 @media (max-width: 1200px) { .feed-page { grid-template-columns: repeat(4, 1fr); } }
 @media (max-width: 800px)  { .feed-page { grid-template-columns: repeat(3, 1fr); } .feed-nav { width: 38px; height: 38px; font-size: 20px; } }
-@media (max-width: 520px)  { .feed-page { grid-template-columns: repeat(2, 1fr); } }
+/* Phones keep 3 poster columns here — see the phone block at the end of this
+   file. These are bare thumbnails, not cards, so three read fine; it is the
+   results GRID that needs two. */
 
 /* --- Fix: native <select> dropdown options were white-on-white --- */
 .filter-select option { background: #14141c; color: #fff; }
@@ -1542,6 +1544,13 @@ html.light-mode .filter-select option { background: #fff; color: #111; }
     .feed-page {
         grid-template-columns: repeat(3, 1fr);
         gap: 10px;
+    }
+
+    .feed-nav {
+        width: 30px;
+        height: 30px;
+        font-size: 17px;
+        margin-top: 40px;
     }
 
     .feed-track {
