@@ -8,18 +8,23 @@ const PER_PAGE = 6;
 
 function FeedPoster({ item, onOpen }: { item: Media; onOpen: (m: Media) => void }) {
   const [src, setSrc] = useState(posterUrl(item.image, item.title));
+  const year = parseInt(String(item.year), 10);
+  // A button, not a clickable div, so the rows are reachable by keyboard.
+  // Two title lines plus the year: a single truncated line turned a row of
+  // Batmans into "Batman: Th…" six times over, with nothing to tell them apart.
   return (
-    <div className="feed-card" onClick={() => onOpen(item)}>
-      <div className="feed-poster">
+    <button className="feed-card" onClick={() => onOpen(item)}>
+      <span className="feed-poster">
         <img
           src={src}
           loading="lazy"
-          alt={item.title}
+          alt=""
           onError={() => setSrc(`https://placehold.co/300x450/111/FFF?text=${encodeURIComponent(item.title)}`)}
         />
-      </div>
-      <div className="feed-card-title">{item.title}</div>
-    </div>
+      </span>
+      <span className="feed-card-title">{item.title}</span>
+      {year > 0 && <span className="feed-card-year">{year}</span>}
+    </button>
   );
 }
 

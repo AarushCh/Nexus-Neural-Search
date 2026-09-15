@@ -16,6 +16,14 @@
     /* Width of the permanent icon rail, collapsed and expanded. */
     --rail-w: 68px;
     --rail-open-w: 268px;
+    /* Every rail control is a 44px square (Apple's minimum touch target)
+       centred in the rail. Deriving the inset from the rail width is what
+       keeps it centred: it used to be a fixed 22px, which was right for the
+       68px desktop rail and pushed every icon 6px off-centre on the 56px phone
+       one. */
+    --rail-slot: 44px;
+    --rail-inset: calc((var(--rail-w) - var(--rail-slot)) / 2);
+    --menu-top: 20px;
 }
 
 html.light-mode body {
@@ -354,7 +362,8 @@ html.light-mode .model-card {
     flex-direction: column;
     background: var(--bg-sidebar);
     border-right: 1px solid var(--border-color);
-    padding: 92px 0 24px;
+    /* Items start just under the menu button; the header no longer takes a row. */
+    padding: calc(var(--menu-top) + var(--rail-slot) + 16px) 0 24px;
     overflow: hidden;
     transition: width 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
     z-index: 1000;
@@ -371,22 +380,26 @@ html.light-mode .model-card {
 .nav-label {
     opacity: 0;
     max-width: 0;
+    margin-left: 0;
     white-space: nowrap;
     overflow: hidden;
-    transition: opacity .18s ease, max-width .28s cubic-bezier(0.2, 0.8, 0.2, 1);
+    transition: opacity .18s ease, max-width .28s cubic-bezier(0.2, 0.8, 0.2, 1), margin-left .28s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
+/* The icon-to-label gap lives on the label, not as a flex gap, so a collapsed
+   item is exactly its 24px icon and nothing overflows the slot. */
 .sidebar.open .nav-label {
     opacity: 1;
     max-width: 180px;
+    margin-left: 14px;
 }
 
 .menu-btn {
     position: fixed;
-    top: 20px;
-    left: 12px;
-    width: 44px;
-    height: 44px;
+    top: var(--menu-top);
+    left: var(--rail-inset);
+    width: var(--rail-slot);
+    height: var(--rail-slot);
     background: var(--bg-card);
     border: 1px solid var(--border-color);
     border-radius: 12px;
@@ -424,17 +437,22 @@ body.menu-open .bar:nth-child(3) {
     transform: rotate(-45deg) translate(4px, -5px);
 }
 
+/* Beside the menu button rather than in a row of its own. As its own row it sat
+   invisible in the collapsed rail and left a ~70px hole between the menu
+   button and the first icon. */
 .hud-header {
+    position: absolute;
+    top: var(--menu-top);
+    left: var(--rail-w);
+    height: var(--rail-slot);
+    display: flex;
+    align-items: center;
     font-family: 'Rajdhani';
     color: var(--text-secondary);
     font-size: 13px;
     font-weight: 700;
     letter-spacing: 2px;
     text-transform: uppercase;
-    padding: 0 22px 14px;
-    margin-bottom: 12px;
-    border-bottom: 1px solid var(--border-color);
-    height: 30px;
     opacity: 0;
     transition: opacity .18s ease;
     white-space: nowrap;
@@ -447,16 +465,18 @@ body.menu-open .bar:nth-child(3) {
 .nav-menu {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding: 8px 10px;
+    gap: 6px;
+    padding: 4px var(--rail-inset);
 }
 
+/* 10px + 24px icon + 10px = the 44px slot, so collapsed each item is a square
+   centred in the rail, and the active highlight is a square around the icon. */
 .nav-item {
     display: flex;
     align-items: center;
-    gap: 14px;
     width: 100%;
-    padding: 12px;
+    min-height: var(--rail-slot);
+    padding: 10px;
     border: 0;
     border-radius: 12px;
     background: transparent;
@@ -496,10 +516,9 @@ body.menu-open .bar:nth-child(3) {
 .status-box {
     display: flex;
     align-items: center;
-    gap: 14px;
-    /* Matches .nav-item's 10px menu padding + 12px item padding, so the dot
-       shares a column with the icons below it. */
-    padding: 6px 22px 14px;
+    /* Rail inset + the nav item's 10px padding: the dot's 24px slot sits in
+       exactly the column the icons below it do. */
+    padding: 0 0 12px calc(var(--rail-inset) + 10px);
     font-family: 'Rajdhani';
     font-size: 13px;
     letter-spacing: 1px;
@@ -515,14 +534,22 @@ body.menu-open .bar:nth-child(3) {
     transition: 0.3s;
 }
 
+/* Label-only, so padded to where the nav labels start (inset + item padding +
+   icon). The divider only exists with something to divide: collapsed, it was a
+   stray line across an empty rail. */
 .hud-footer {
     margin-top: auto;
-    padding: 14px 22px 0;
+    padding: 14px 0 0 calc(var(--rail-inset) + 34px);
     font-family: 'Rajdhani';
     font-size: 13px;
     color: var(--text-secondary);
     letter-spacing: 1px;
-    border-top: 1px solid var(--border-color);
+    border-top: 1px solid transparent;
+    transition: border-color .2s ease;
+}
+
+.sidebar.open .hud-footer {
+    border-top-color: var(--border-color);
 }
 
 /* --- LAYOUT --- */
@@ -714,71 +741,278 @@ input#search-input:focus {
     }
 }
 
+/* --- RESULT CARD ---------------------------------------------------------
+   One tap target, four lines of information, one action row.
+   Spacing is on a 4px scale; the only per-breakpoint changes are type size,
+   padding and how many synopsis lines fit. */
 .card {
-    background: var(--bg-card);
+    --card-pad: 14px;
+    /* Opaque, not the translucent --bg-card: text sits on this, and the
+       animated background would otherwise draw lines through the synopsis.
+       The old fix was backdrop-filter: blur, which is a composited layer per
+       card — two dozen of them is scroll jank on a mid-range phone. */
+    background: #121219;
     border: 1px solid var(--border-color);
     border-radius: 12px;
     overflow: hidden;
     display: flex;
     flex-direction: column;
     position: relative;
-    backdrop-filter: blur(12px);
-    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     min-width: 0;
+    transition: transform .25s cubic-bezier(0.4, 0, 0.2, 1), border-color .25s, box-shadow .25s;
     animation: fadeIn 0.5s ease-out forwards;
 }
 
-.card:hover {
-    transform: translateY(-8px);
-    box-shadow: 0 12px 40px rgba(0, 243, 255, 0.15);
-    border-color: var(--neon-blue);
-    z-index: 2;
+/* Hover lift only where a pointer can actually hover. On touch screens a
+   :hover state sticks to whatever was tapped last. */
+@media (hover: hover) {
+    .card:hover {
+        transform: translateY(-4px);
+        border-color: var(--neon-blue);
+        box-shadow: 0 10px 30px rgba(0, 243, 255, 0.12);
+    }
+
+    .card:hover .card-poster img {
+        transform: scale(1.04);
+    }
 }
 
-.card:hover .card-media-wrapper img {
-    transform: scale(1.08);
-}
-
-.card-media-wrapper {
-    width: 100%;
-    aspect-ratio: 2 / 3;
+.card-poster {
     position: relative;
-    background: #0b0b0f;
+    aspect-ratio: 2 / 3;
     overflow: hidden;
+    background: #0b0b0f;
 }
 
-.card-media-wrapper img {
+.card-poster img {
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
-    transition: transform 0.5s ease, opacity 0.5s ease;
-    opacity: 1;
+    transition: transform .4s ease;
 }
 
-.card img {
+/* Poster pills: solid, not an outline over a gradient. They have to stay
+   readable on a white poster as well as a black one — the old cyan outline
+   vanished on anything light — so they are the same in both themes. */
+.card-match,
+.card-kind {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    transition: 0.5s;
+    left: 8px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: rgba(6, 6, 10, 0.85);
+    line-height: 1;
 }
 
-.card img.loaded {
-    opacity: 1;
+.card-match {
+    top: 8px;
+    border: 1px solid rgba(0, 243, 255, 0.5);
+    color: #00f3ff;
+    font-family: 'Rajdhani', sans-serif;
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: .3px;
 }
 
-.match-bar-track {
+.card-kind {
+    bottom: 8px;
+    font-family: 'Inter', sans-serif;
+    font-weight: 700;
+    font-size: 10.5px;
+    letter-spacing: .7px;
+    text-transform: uppercase;
+    color: #00f3ff;
+}
+
+.card-kind[data-kind="type-tv"] { color: #00ff9d; }
+.card-kind[data-kind="type-anime"] { color: #ff5c93; }
+.card-kind[data-kind="type-doc"] { color: #ffd700; }
+
+.card-match small {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .8px;
+    color: rgba(255, 255, 255, 0.75);
+}
+
+.card-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px var(--card-pad) var(--card-pad);
+}
+
+.card-title {
+    font-family: 'Inter', sans-serif;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--text-primary);
+    /* Two lines, always the same two-line box, so a row of cards lines up. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.card-open {
+    all: unset;
+    cursor: pointer;
+}
+
+/* The block link: the title's button covers the whole card. */
+.card-open::after {
+    content: "";
     position: absolute;
-    bottom: 0;
-    left: 0;
-    width: 100%;
-    background: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, transparent 100%);
-    padding: 15px;
+    inset: 0;
+    z-index: 1;
+    border-radius: 12px;
+}
+
+.card-open:focus-visible::after {
+    outline: 2px solid var(--neon-blue);
+    outline-offset: -2px;
+}
+
+/* One line, always: year and rating fit even a 360px phone's tile. */
+.card-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+    overflow: hidden;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.card-meta > * + *::before {
+    content: "·";
+    margin: 0 6px;
+    opacity: .6;
+}
+
+.card-rating {
+    color: #ffd23f;
+    font-weight: 600;
+}
+
+.card-desc {
+    margin-top: 4px;
+    font-size: 13.5px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.card-actions {
+    /* Pinned to the bottom, so the buttons share a line across a row even when
+       one synopsis is shorter than its neighbour's. */
+    margin-top: auto;
+    padding-top: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Lifted above the stretched link, so they stay their own targets. */
+.card-similar,
+.card-save {
+    position: relative;
     z-index: 2;
-    pointer-events: none;
+    height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color .2s, background .2s, border-color .2s;
+}
+
+.card-similar {
+    flex: 1;
+    min-width: 0;
+    gap: 6px;
+    padding: 0 10px;
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.card-save {
+    flex: 0 0 40px;
+    margin-left: auto;
+}
+
+.card-similar svg,
+.card-save svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.card-save[aria-pressed="true"] {
+    color: #ff0055;
+    border-color: rgba(255, 0, 85, 0.45);
+    background: rgba(255, 0, 85, 0.1);
+}
+
+.card-save[aria-pressed="true"] svg {
+    fill: currentColor;
+}
+
+@media (hover: hover) {
+    .card-similar:hover {
+        color: #000;
+        background: var(--neon-blue);
+        border-color: var(--neon-blue);
+    }
+
+    .card-save:hover {
+        color: #ff0055;
+        border-color: rgba(255, 0, 85, 0.45);
+    }
+}
+
+.card-similar:focus-visible,
+.card-save:focus-visible {
+    outline: 2px solid var(--neon-blue);
+    outline-offset: 2px;
+}
+
+html.light-mode .card {
+    background: #ffffff;
+}
+
+/* Light mode: gold is illegible as small text on white; this clears 4.5:1. */
+html.light-mode .card-rating { color: #8a5a00; }
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
 }
 
 @media (max-width: 1200px) {
@@ -806,64 +1040,7 @@ input#search-input:focus {
     }
 }
 
-.match-label-base {
-    font-family: 'Rajdhani';
-    font-weight: 800;
-    font-size: 12px;
-    padding: 4px 8px;
-    border-radius: 4px;
-}
-
-.label-cyan {
-    background: rgba(0, 243, 255, 0.2);
-    color: #00f3ff;
-    border: 1px solid #00f3ff;
-}
-
-.label-pink {
-    background: rgba(255, 0, 85, 0.2);
-    color: #ff0055;
-    border: 1px solid #ff0055;
-}
-
-.card-content {
-    padding: 20px;
-    flex-grow: 1;
-    display: flex;
-    flex-direction: column;
-}
-
-.card h3 {
-    font-family: 'Rajdhani';
-    font-size: 20px;
-    margin: 10px 0;
-    color: var(--text-primary);
-    text-transform: uppercase;
-    line-height: 1.2;
-}
-
-.card p {
-    font-size: 14px;
-    color: var(--text-secondary);
-    line-height: 1.5;
-    flex-grow: 1;
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    line-clamp: 3;
-    -webkit-box-orient: vertical;
-    margin-bottom: 15px;
-}
-
-.badge-row {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 10px;
-    align-items: center;
-    flex-wrap: wrap;
-    height: 30px;
-}
-
+/* Type and rating chips — the detail modal and title page still use these. */
 .type-badge {
     font-size: 11px;
     padding: 4px 8px;
@@ -913,50 +1090,6 @@ input#search-input:focus {
     gap: 4px;
     box-shadow: 0 0 10px rgba(255, 215, 0, 0.3);
     /* Subtle golden glow */
-}
-
-.wishlist-btn {
-    background: transparent;
-    border: none;
-    padding: 0;
-    color: #ff0055;
-    font-size: 24px;
-    cursor: pointer;
-    transition: 0.2s;
-    width: 40px;
-    height: 40px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-left: auto;
-    border-radius: 50%;
-}
-
-.wishlist-btn:hover {
-    color: #ffffff !important;
-    text-shadow: 0 0 15px #ff0055;
-    transform: scale(1.15);
-    background: rgba(255, 0, 85, 0.15);
-}
-
-.similar-btn {
-    width: 100%;
-    padding: 12px;
-    margin-top: auto;
-    background: transparent;
-    border: 1px solid var(--border-color);
-    color: var(--text-secondary);
-    font-family: 'Rajdhani';
-    font-weight: bold;
-    cursor: pointer;
-    transition: 0.2s;
-    border-radius: 8px;
-}
-
-.similar-btn:hover {
-    background: var(--neon-blue);
-    color: #000;
-    border-color: var(--neon-blue);
 }
 
 .back-btn {
@@ -1316,15 +1449,29 @@ html.light-mode ::-webkit-scrollbar-thumb:hover {
     gap: 18px; overflow-x: auto; padding-bottom: 14px; scroll-snap-type: x mandatory;
 }
 .feed-track > * { scroll-snap-align: start; }
-.feed-card { cursor: pointer; }
+.feed-card {
+    display: flex; flex-direction: column; width: 100%; min-width: 0;
+    padding: 0; border: 0; background: none; color: inherit; font: inherit;
+    text-align: left; cursor: pointer;
+}
 .feed-poster {
-    width: 100%; aspect-ratio: 2/3; border-radius: 10px; overflow: hidden;
+    display: block; width: 100%; aspect-ratio: 2/3; border-radius: 10px; overflow: hidden;
     border: 1px solid var(--border-color); background: #0b0b0f; position: relative;
     transition: transform .3s, box-shadow .3s, border-color .3s;
 }
-.feed-poster img { width: 100%; height: 100%; object-fit: cover; }
-.feed-card:hover .feed-poster { transform: translateY(-6px); box-shadow: 0 12px 30px rgba(0,243,255,.2); border-color: var(--neon-blue); }
-.feed-card-title { font-family:'Rajdhani'; font-weight:600; font-size:14px; margin-top:8px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.feed-poster img { width: 100%; height: 100%; object-fit: cover; display: block; }
+@media (hover: hover) {
+    .feed-card:hover .feed-poster { transform: translateY(-6px); box-shadow: 0 12px 30px rgba(0,243,255,.2); border-color: var(--neon-blue); }
+}
+.feed-card:focus-visible { outline: none; }
+.feed-card:focus-visible .feed-poster { outline: 2px solid var(--neon-blue); outline-offset: 2px; }
+/* Two lines in a fixed two-line box, so posters in a row stay aligned. */
+.feed-card-title {
+    margin-top: 8px; font-family: 'Inter', sans-serif; font-weight: 600; font-size: 13.5px;
+    line-height: 1.3; min-height: calc(2em * 1.3); color: var(--text-primary);
+    display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.feed-card-year { margin-top: 2px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 
 /* --- Extended filter controls (rating/year selects) --- */
 .filter-select {
@@ -1332,9 +1479,6 @@ html.light-mode ::-webkit-scrollbar-thumb:hover {
     padding: 8px 12px; border-radius: 20px; font-family:'Rajdhani'; font-weight:700; font-size:13px; cursor: pointer;
 }
 .filter-select:focus { outline: none; border-color: var(--neon-blue); }
-
-/* --- Clickable poster in result card --- */
-.card-media-wrapper { cursor: pointer; }
 
 /* --- Detail modal --- */
 .detail-box {
@@ -1440,20 +1584,12 @@ html.light-mode .filter-select option { background: #fff; color: #111; }
    control scaled to match.
    ============================================================ */
 @media (max-width: 768px) {
+    /* Only the rail width and the top offset change: the 44px slot, and every
+       inset derived from it, recompute to stay centred. */
     :root {
         --rail-w: 56px;
         --rail-open-w: 248px;
-    }
-
-    .menu-btn {
-        top: 12px;
-        left: 8px;
-        width: 40px;
-        height: 40px;
-    }
-
-    .sidebar {
-        padding-top: 66px;
+        --menu-top: 12px;
     }
 
     .main-container {
@@ -1490,41 +1626,76 @@ html.light-mode .filter-select option { background: #fff; color: #111; }
         font-size: 12.5px;
     }
 
-    /* Card text has half the width now, so it has to stop shouting. */
-    .card-content {
-        padding: 12px;
+    /* A phone tile has about 130px of text width: smaller type, two synopsis
+       lines instead of three, and the same four-line structure. */
+    .card {
+        --card-pad: 10px;
     }
 
-    .card h3 {
-        font-size: 15px;
-        margin: 8px 0 6px;
+    .card-body {
+        gap: 3px;
+        padding-top: 10px;
     }
 
-    .card p {
+    /* Most phone titles wrap, so reserve the second line: a one-line title
+       then keeps its year and synopsis level with a two-line neighbour. Not on
+       desktop, where most titles fit one line and the reserved line was just a
+       gap between a title and its own year. */
+    .card-title {
+        font-size: 14.5px;
+        min-height: calc(2em * 1.3);
+    }
+
+    .card-meta {
+        font-size: 12px;
+    }
+
+    .card-meta > * + *::before {
+        margin: 0 5px;
+    }
+
+    .card-desc {
         font-size: 12.5px;
-        line-height: 1.45;
-        -webkit-line-clamp: 3;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
     }
 
-    .badge-row {
+    .card-actions {
+        padding-top: 10px;
         gap: 6px;
     }
 
+    .card-similar {
+        font-size: 12.5px;
+        padding: 0 8px;
+    }
+
+    .card-match,
+    .card-kind {
+        left: 6px;
+        padding: 3px 7px;
+    }
+
+    .card-match {
+        top: 6px;
+        font-size: 12px;
+    }
+
+    .card-kind {
+        bottom: 6px;
+        font-size: 9.5px;
+        letter-spacing: .5px;
+    }
+
+    .card-match small {
+        font-size: 9px;
+    }
+
+    /* The detail modal's chips. */
     .type-badge,
     .rating-badge {
         font-size: 10px;
         padding: 3px 7px;
-    }
-
-    .similar-btn {
-        font-size: 11px;
-        padding: 8px;
-        letter-spacing: .5px;
-    }
-
-    .match-label-base {
-        font-size: 10px;
-        padding: 3px 6px;
     }
 
     /* Carousels: six columns on a phone is six thumbnails nobody can see. */
@@ -1560,6 +1731,11 @@ html.light-mode .filter-select option { background: #fff; color: #111; }
 
     .feed-card-title {
         font-size: 12px;
+        margin-top: 6px;
+    }
+
+    .feed-card-year {
+        font-size: 11px;
     }
 
     /* Floating controls were overlapping the results. */
@@ -1603,11 +1779,13 @@ html.light-mode .filter-select option { background: #fff; color: #111; }
         padding: 10px;
     }
 
-    .card h3 {
+    .card-title {
         font-size: 14px;
     }
 
-    .card p {
-        -webkit-line-clamp: 2;
+    /* ~60px of button: the word fits, the icon does not. Dropped on purpose
+       rather than left for flexbox to squash to nothing. */
+    .card-similar svg {
+        display: none;
     }
 }
